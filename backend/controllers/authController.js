@@ -1,79 +1,106 @@
-const pool = require('../config/db'); 
+const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-
-// Helper function to create Token
 const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '30d',
-    });
+    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
-// @desc    Register new user
+// @desc    Register new user (Rider or Driver)
 // @route   POST /api/auth/register
 exports.registerUser = async (req, res) => {
-    const { name, email, phone, password, role } = req.body;
+    const { name, email, phone, password, role, car_model, car_plate, license_number } = req.body;
 
     if (!name || !email || !password || !phone) {
-        return res.status(400).json({ error: 'Please provide all fields' });
+        return res.status(400).json({ error: 'Please provide all required fields' });
     }
 
     try {
-        // 1. Hash Password
+        // 1. Check if user exists
+        const [existingUsers] = await pool.promise().query(
+            'SELECT * FROM users WHERE email = ? OR phone = ?', 
+            [email, phone]
+        );
+        if (existingUsers.length > 0) {
+            return res.status(400).json({ error: 'User already exists' });
+        }
+
+        // 2. Hash Password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // 2. Insert User
-        const query = `INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)`;
+        // 3. Insert into USERS table
+        const [userResult] = await pool.promise().query(
+            `INSERT INTO users (name, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?)`,
+            [name, email, phone, hashedPassword, role || 'rider']
+        );
         
-        pool.query(query, [name, email, phone, hashedPassword, role || 'rider'], (err, result) => {
-            if (err) {
-                if (err.code === 'ER_DUP_ENTRY') {
-                    return res.status(400).json({ error: 'Email or Phone already exists' });
-                }
-                return res.status(500).json({ error: err.message });
+        const userId = userResult.insertId;
+
+        // 4. If Driver, Insert into DRIVERS table
+        if (role === 'driver') {
+            if (!car_model || !car_plate || !license_number) {
+                return res.status(400).json({ error: 'Drivers must provide car details and license number' });
             }
-            
-            // 3. Send Response with Token
-            res.status(201).json({
-                message: 'User registered',
-                user: { id: result.insertId, name, email, role: role || 'rider' },
-                token: generateToken(result.insertId) 
-            });
+
+            await pool.promise().query(
+                `INSERT INTO drivers (user_id, car_model, car_plate, license_number, is_online) VALUES (?, ?, ?, ?, ?)`,
+                [userId, car_model, car_plate, license_number, false] 
+            );
+        }
+
+        res.status(201).json({
+            message: 'Registration successful',
+            user: { id: userId, name, email, role: role || 'rider' },
+            token: generateToken(userId)
         });
 
-    } catch (error) {
-        res.status(500).json({ error: 'Server error' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error during registration' });
     }
 };
 
 // @desc    Login user
 // @route   POST /api/auth/login
-exports.loginUser = (req, res) => {
+exports.loginUser = async (req, res) => {
     const { email, password } = req.body;
 
-    const query = `SELECT * FROM users WHERE email = ?`;
-    pool.query(query, [email], async (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        if (results.length === 0) {
+    try {
+        const [users] = await pool.promise().query('SELECT * FROM users WHERE email = ?', [email]);
+        
+        if (users.length === 0) {
             return res.status(400).json({ error: 'Invalid credentials' });
         }
 
-        const user = results[0];
-
-        // Check Password
+        const user = users[0];
         const isMatch = await bcrypt.compare(password, user.password_hash);
-        
-        if (isMatch) {
-            res.json({
-                message: 'Login successful',
-                user: { id: user.id, name: user.name, email: user.email, role: user.role },
-                token: generateToken(user.id)
-            });
-        } else {
-            res.status(400).json({ error: 'Invalid credentials' });
+
+        if (!isMatch) {
+            return res.status(400).json({ error: 'Invalid credentials' });
         }
-    });
+
+        // If driver, get their driver ID too
+        let driverInfo = null;
+        if (user.role === 'driver') {
+            const [drivers] = await pool.promise().query('SELECT * FROM drivers WHERE user_id = ?', [user.id]);
+            if (drivers.length > 0) driverInfo = drivers[0];
+        }
+
+        res.json({
+            message: 'Login successful',
+            user: { 
+                id: user.id, 
+                name: user.name, 
+                email: user.email, 
+                role: user.role,
+                driverId: driverInfo ? driverInfo.id : null 
+            },
+            token: generateToken(user.id)
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error' });
+    }
 };

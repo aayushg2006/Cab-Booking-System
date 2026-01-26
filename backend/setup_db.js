@@ -1,7 +1,6 @@
 require('dotenv').config();
 const mysql = require('mysql2');
 
-// Connect to the database
 const connection = mysql.createConnection({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -12,17 +11,14 @@ const connection = mysql.createConnection({
 });
 
 connection.connect((err) => {
-    if (err) {
-        console.error('❌ Connection failed:', err);
-        return;
-    }
-    console.log('✅ Connected to database. Creating tables...');
+    if (err) return console.error('❌ Connection failed:', err);
+    console.log('✅ Connected. Upgrading Database Schema...');
     createTables();
 });
 
 function createTables() {
     const queries = [
-        // 1. Create Users Table
+        // 1. Users (Unchanged)
         `CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
@@ -30,10 +26,12 @@ function createTables() {
             phone VARCHAR(15) UNIQUE NOT NULL,
             password_hash VARCHAR(255) NOT NULL,
             role ENUM('rider', 'driver', 'admin') DEFAULT 'rider',
+            wallet_balance DECIMAL(10,2) DEFAULT 0.00,
+            rating DECIMAL(3, 2) DEFAULT 5.00,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )`,
 
-        // 2. Create Drivers Table (Linked to Users)
+        // 2. Drivers (Unchanged)
         `CREATE TABLE IF NOT EXISTS drivers (
             id INT AUTO_INCREMENT PRIMARY KEY,
             user_id INT NOT NULL,
@@ -46,7 +44,7 @@ function createTables() {
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )`,
 
-        // 3. Create Bookings Table
+        // 3. Bookings (Updated with OTP and Payment Status)
         `CREATE TABLE IF NOT EXISTS bookings (
             id INT AUTO_INCREMENT PRIMARY KEY,
             rider_id INT NOT NULL,
@@ -58,26 +56,51 @@ function createTables() {
             drop_lat DECIMAL(10, 8),
             drop_lng DECIMAL(11, 8),
             fare DECIMAL(10, 2),
-            status ENUM('pending', 'accepted', 'ongoing', 'completed', 'cancelled') DEFAULT 'pending',
+            status ENUM('pending', 'accepted', 'arrived', 'ongoing', 'completed', 'cancelled') DEFAULT 'pending',
+            payment_status ENUM('pending', 'paid') DEFAULT 'pending',
+            payment_method ENUM('cash', 'wallet') DEFAULT 'cash',
+            otp VARCHAR(6),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (rider_id) REFERENCES users(id),
             FOREIGN KEY (driver_id) REFERENCES drivers(id)
+        )`,
+
+        // 4. Ratings (NEW)
+        `CREATE TABLE IF NOT EXISTS ratings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            booking_id INT NOT NULL,
+            reviewer_id INT NOT NULL, -- Who gave the rating
+            rated_user_id INT NOT NULL, -- Who received the rating
+            stars INT CHECK (stars >= 1 AND stars <= 5),
+            comment TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (booking_id) REFERENCES bookings(id),
+            FOREIGN KEY (reviewer_id) REFERENCES users(id),
+            FOREIGN KEY (rated_user_id) REFERENCES users(id)
+        )`,
+
+        // 5. Transactions (NEW - For Wallet History)
+        `CREATE TABLE IF NOT EXISTS transactions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            amount DECIMAL(10, 2) NOT NULL,
+            type ENUM('credit', 'debit') NOT NULL,
+            description VARCHAR(255),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )`
     ];
 
     let completed = 0;
     queries.forEach((query, index) => {
-        connection.query(query, (err, result) => {
-            if (err) {
-                console.error(`❌ Error creating table ${index + 1}:`, err.message);
-            } else {
-                console.log(`✅ Table ${index + 1} created/verified successfully.`);
-            }
+        connection.query(query, (err) => {
+            if (err) console.error(`❌ Error table ${index + 1}:`, err.message);
+            else console.log(`✅ Table ${index + 1} Checked/Created.`);
             
             completed++;
             if (completed === queries.length) {
-                console.log('🎉 All tables setup complete!');
-                connection.end(); // Close connection
+                console.log('🎉 Database Schema Matches Uber Standard!');
+                connection.end();
             }
         });
     });

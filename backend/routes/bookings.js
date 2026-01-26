@@ -1,10 +1,20 @@
 const express = require('express');
 const router = express.Router();
-// 👇 IMPORT acceptRide HERE
-const { requestRide, acceptRide } = require('../controllers/bookingController');
+const { 
+    requestRide, 
+    acceptRide, 
+    rejectRide, 
+    startRide, 
+    endRide,
+    getRideHistory 
+} = require('../controllers/bookingController');
+const { protect } = require('../middleware/authMiddleware');
 
-// In real app, add 'protect' middleware here to ensure user is logged in
-router.post('/request', requestRide);
-router.post('/accept', acceptRide); 
+router.post('/request', protect, requestRide);
+router.post('/accept', protect, acceptRide); 
+router.post('/reject', protect, rejectRide);
+router.post('/start', protect, startRide);
+router.post('/end', protect, endRide);
+router.get('/history', protect, getRideHistory);
 
 module.exports = router;
