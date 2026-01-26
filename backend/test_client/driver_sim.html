@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fake Driver Simulator</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        .status { padding: 10px; background: #eee; border-radius: 5px; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h2>🚖 Driver Simulator</h2>
+    <div class="status" id="status">🔴 Disconnected</div>
+    <button onclick="startDriving()">DO NOT PRESS YET</button>
+    <div id="logs"></div>
+
+<script>
+        const socket = io('http://localhost:3000');
+        const driverId = 1; // Make sure this matches your Seed ID
+        let lat = 19.0760; 
+        let lng = 72.8777;
+
+        socket.on('connect', () => {
+            document.getElementById('status').innerText = "🟢 Connected to Server!";
+            document.getElementById('status').style.background = "#d4edda";
+            document.querySelector('button').innerText = "Cp Start Driving";
+        });
+
+        function startDriving() {
+            setInterval(() => {
+                lat += 0.0001; 
+                lng += 0.0001;
+                socket.emit('driverLocation', { driverId, lat: lat.toFixed(4), lng: lng.toFixed(4) });
+                
+                // Optional: Update log (commented out to keep screen clean)
+                // const log = document.createElement('div');
+                // log.innerText = `CcZG Sent: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+                // document.getElementById('logs').prepend(log);
+            }, 3000);
+        }
+
+        // --- NEW: Handle Ride Requests ---
+        socket.on('newRideRequest', (data) => {
+            // Create a nice looking notification with a button
+            const notification = document.createElement('div');
+            notification.style.background = '#fff3cd';
+            notification.style.padding = '10px';
+            notification.style.border = '1px solid #ffeeba';
+            notification.style.marginTop = '10px';
+            notification.innerHTML = `
+                <strong>🔔 New Ride Request!</strong><br>
+                Pickup: ${data.pickupAddress}<br>
+                Distance: ${data.distance}<br>
+                <button onclick="acceptRide(${data.bookingId})" style="background:green;color:white;padding:5px 10px;border:none;cursor:pointer;margin-top:5px;">✅ ACCEPT RIDE</button>
+            `;
+            document.getElementById('logs').prepend(notification);
+        });
+
+        // Function to call the API when button is clicked
+        async function acceptRide(bookingId) {
+            try {
+                const response = await fetch('http://localhost:3000/api/bookings/accept', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bookingId: bookingId, driverId: driverId })
+                });
+                const result = await response.json();
+                alert(result.message);
+                
+                // Visual feedback
+                const log = document.createElement('div');
+                log.style.background = '#d4edda';
+                log.innerText = `cw You accepted Booking #${bookingId}`;
+                document.getElementById('logs').prepend(log);
+
+            } catch (error) {
+                console.error('Error accepting ride:', error);
+            }
+        }
+    </script>
+</body>
+</html>
