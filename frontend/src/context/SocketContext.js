@@ -4,8 +4,8 @@ import { AuthContext } from './AuthContext';
 
 export const SocketContext = createContext();
 
-// ⚠️ REPLACE WITH YOUR PC IP (Same as api/client.js)
-const SOCKET_URL = 'http://192.168.0.235:3000'; 
+// Use the same URL as the API
+const SOCKET_URL = process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.109:3000';
 
 export const SocketProvider = ({ children }) => {
   const { userToken, userInfo } = useContext(AuthContext);
@@ -14,25 +14,27 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     if (userToken && userInfo) {
+      console.log(`🔌 Connecting to Socket at: ${SOCKET_URL}`);
+
       // 1. Initialize Socket
       const newSocket = io(SOCKET_URL, {
-        transports: ['websocket'], // Force WebSocket for speed
-        query: { token: userToken } // Optional: Send token if needed
+        transports: ['websocket'], // ⚠️ CRITICAL for Android
+        reconnection: true,
+        reconnectionAttempts: 5,
       });
 
-      console.log('🔌 Initializing Socket...');
-
       newSocket.on('connect', () => {
-        console.log('✅ Socket Connected:', newSocket.id);
+        console.log('✅ Socket Connected! ID:', newSocket.id);
         setOnline(true);
         
-        // 2. Identify User Type
+        // 2. Identify User Type immediately
         if (userInfo.role === 'rider') {
            newSocket.emit('joinRider', userInfo.id);
-        } else if (userInfo.role === 'driver') {
-           // Drivers go online manually usually, but we can register them
-           // newSocket.emit('driverLocation', ...); 
         }
+      });
+
+      newSocket.on('connect_error', (err) => {
+        console.log('❌ Socket Connection Error:', err.message);
       });
 
       newSocket.on('disconnect', () => {
@@ -42,7 +44,6 @@ export const SocketProvider = ({ children }) => {
 
       setSocket(newSocket);
 
-      // Cleanup on logout
       return () => newSocket.close();
     }
   }, [userToken, userInfo]);

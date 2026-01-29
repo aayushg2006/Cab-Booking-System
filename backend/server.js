@@ -40,19 +40,23 @@ io.on('connection', (socket) => {
 
     // 1. Driver Location Updates
     socket.on('driverLocation', (data) => {
-        if (!data.driverId) {
-            console.log("⚠️ Received driverLocation without driverId!");
-            return;
-        }
+        if (!data.driverId) return;
 
+        // Update Global Map
         global.activeDrivers.set(data.driverId, {
             socketId: socket.id,
             lat: parseFloat(data.lat),
             lng: parseFloat(data.lng)
         });
         
-        // Log every few seconds in a real app, but here we log every update to debug
-        console.log(`📍 Driver ${data.driverId} Online at [${data.lat}, ${data.lng}]`);
+        // 🚀 NEW: Broadcast this movement! 
+        // In a real app, send only to the specific rider. 
+        // For MVP, we broadcast, and the Frontend filters it.
+        io.emit('driverMoved', {
+            driverId: data.driverId,
+            lat: parseFloat(data.lat),
+            lng: parseFloat(data.lng)
+        });
     });
 
     // 2. Rider Joins

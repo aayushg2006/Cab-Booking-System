@@ -1,6 +1,5 @@
-// frontend/src/screens/MapScreen.js
 import React, { useEffect, useState, useContext, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator, Image, Keyboard } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions'; 
 import * as Location from 'expo-location';
@@ -14,6 +13,7 @@ import { colors } from '../theme/colors';
 
 import RideRequestPanel from '../components/RideRequestPanel';
 import DriverRequestModal from '../components/DriverRequestModal';
+import OTPModal from '../components/OTPModal';
 
 const GOOGLE_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
 
@@ -29,41 +29,40 @@ const MapScreen = ({ navigation }) => {
   const [activeBooking, setActiveBooking] = useState(null);
   const [isDriverOnline, setIsDriverOnline] = useState(false);
   const [incomingRequest, setIncomingRequest] = useState(null);
+  const [showOtpModal, setShowOtpModal] = useState(false);
+  const [driverLocation, setDriverLocation] = useState(null);
   const [loadingLocation, setLoadingLocation] = useState(true);
 
-  // 1. 📍 Get Location & Update Driver Status
+  // 1. 📍 Get My Location
   useEffect(() => {
     (async () => {
       try {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          Alert.alert('Permission Denied', 'Allow location access to use the app.');
           setLoadingLocation(false);
           return;
         }
-
+        
         let loc = await Location.getCurrentPositionAsync({});
-        const currentLoc = {
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-          latitudeDelta: 0.015,
-          longitudeDelta: 0.0121,
+        const currentLoc = { 
+            latitude: loc.coords.latitude, 
+            longitude: loc.coords.longitude, 
+            latitudeDelta: 0.015, 
+            longitudeDelta: 0.0121 
         };
         setLocation(currentLoc);
         setLoadingLocation(false);
 
-        // 🛠 FIX: Ensure we emit the correct driverId
-        if (userInfo.role === 'driver' && isDriverOnline && socket) {
-            const dId = userInfo.driverId || userInfo.id; // Fallback to ID
-            console.log("📡 Going Online: Driver", dId);
-            socket.emit('driverLocation', { driverId: dId, ...currentLoc });
+        if (userInfo.role === 'driver' && isDriverOnline && socket && socket.connected) {
+            const dId = userInfo.driverId || userInfo.id;
+            socket.emit('driverLocation', { driverId: dId, lat: loc.coords.latitude, lng: loc.coords.longitude });
         }
-      } catch (error) {
-        console.log("Error getting location:", error);
-        setLoadingLocation(false);
+      } catch (err) {
+          console.log("Loc Error:", err);
+          setLoadingLocation(false);
       }
     })();
-  }, [isDriverOnline]);
+  }, [isDriverOnline, userInfo, socket]);
 
   // 2. ⚡ Socket Listeners
   useEffect(() => {
@@ -71,66 +70,46 @@ const MapScreen = ({ navigation }) => {
 
     socket.on('rideAccepted', (data) => {
         setStatus('ACCEPTED');
-        setActiveBooking(prev => ({ ...prev, ...data }));
-        Alert.alert("Ride Accepted", "Driver is on the way!");
+        setActiveBooking(prev => ({ ...prev, ...data })); 
+        if (userInfo.role === 'rider') {
+             Alert.alert("Ride Accepted", `${data.driverName || 'Driver'} is on the way!`);
+        }
+    });
+
+    socket.on('driverMoved', (data) => {
+        if (activeBooking && activeBooking.driverId == data.driverId) {
+            setDriverLocation({ latitude: data.lat, longitude: data.lng });
+        }
     });
 
     socket.on('rideStarted', () => {
-        setStatus('ONGOING');
-        Alert.alert("Ride Started", "Have a safe trip!");
+        console.log("⚡ Socket: Ride Started");
+        setShowOtpModal(false);
+        // Delay status update slightly to let modal close
+        setTimeout(() => {
+            setStatus('ONGOING');
+            Alert.alert("Ride Started", "Have a safe trip!");
+        }, 300);
     });
 
     socket.on('rideCompleted', ({ fare }) => {
         setStatus('COMPLETED');
-        Alert.alert('Ride Completed', `Total Fare: $${fare}`);
+        Alert.alert('Ride Completed', `Total Fare: ₹${fare}`);
         navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId });
         setStatus('IDLE');
         setDestination(null);
         setActiveBooking(null);
+        setDriverLocation(null);
     });
 
-    socket.on('newRideRequest', (data) => setIncomingRequest(data));
+    socket.on('newRideRequest', (data) => {
+        setIncomingRequest(data);
+    });
 
-    return () => socket.offAll();
+    return () => socket.removeAllListeners();
   }, [socket, activeBooking]);
 
-  // --- 🛠️ TEST HELPER ---
-  const simulateDestination = () => {
-      if (!location) return;
-      const mockDest = {
-          latitude: location.latitude + 0.005, 
-          longitude: location.longitude + 0.005
-      };
-      setDestination(mockDest);
-      setStatus('SELECTING');
-      setRouteInfo({ distance: '2.5', fare: '12.50' });
-      mapRef.current.fitToCoordinates([location, mockDest], {
-          edgePadding: { top: 50, right: 50, bottom: 200, left: 50 },
-          animated: true,
-      });
-  };
-
-  const handleDestinationSelect = (data, details = null) => {
-    if (!details) return;
-    const destLoc = { 
-        latitude: details.geometry.location.lat, 
-        longitude: details.geometry.location.lng 
-    };
-    setDestination(destLoc);
-    setStatus('SELECTING');
-    if(location) {
-        mapRef.current.fitToCoordinates([location, destLoc], {
-            edgePadding: { top: 100, right: 50, bottom: 300, left: 50 },
-            animated: true,
-        });
-    }
-  };
-
-  const onDirectionsReady = (result) => {
-      const distKm = result.distance;
-      const price = (2.5 + (distKm * 1.5)).toFixed(2);
-      setRouteInfo({ distance: distKm.toFixed(1), fare: price });
-  };
+  // --- ACTIONS ---
 
   const requestRide = async () => {
     setStatus('SEARCHING');
@@ -142,13 +121,14 @@ const MapScreen = ({ navigation }) => {
             dropLat: destination.latitude,
             dropLng: destination.longitude,
             pickupAddress: "My Location",
-            dropAddress: "Destination"
+            dropAddress: "Destination",
+            fare: routeInfo.fare
         }, { headers: { Authorization: `Bearer ${userToken}` }});
         
         setActiveBooking({ bookingId: res.data.bookingId, otp: res.data.otp }); 
     } catch (err) {
         setStatus('SELECTING');
-        Alert.alert('Booking Failed', err.response?.data?.message || 'No drivers available nearby.');
+        Alert.alert('Booking Failed', err.response?.data?.message || 'No drivers available.');
     }
   };
 
@@ -156,9 +136,9 @@ const MapScreen = ({ navigation }) => {
     if (!incomingRequest) return;
     try {
         const dId = userInfo.driverId || userInfo.id;
-        await client.post('/bookings/accept', {
-            bookingId: incomingRequest.bookingId,
-            driverId: dId
+        await client.post('/bookings/accept', { 
+            bookingId: incomingRequest.bookingId, 
+            driverId: dId 
         }, { headers: { Authorization: `Bearer ${userToken}` }});
         
         setStatus('ACCEPTED');
@@ -169,33 +149,45 @@ const MapScreen = ({ navigation }) => {
     }
   };
 
-  const startRide = () => {
-     Alert.alert("Enter OTP", "Ask rider for code:", [
-         { text: "Cancel", style: "cancel" },
-         { text: "Submit", onPress: async () => {
-             const demoOtp = activeBooking?.otp || "1234"; 
-             try {
-                await client.post('/bookings/start', { bookingId: activeBooking.bookingId, otp: demoOtp }, 
-                { headers: { Authorization: `Bearer ${userToken}` }});
-                setStatus('ONGOING');
-             } catch(e) { Alert.alert("Invalid OTP"); }
-         }}
-     ]); 
+  const startRide = async (otpInput) => {
+      // 🛡️ CRASH FIX: Ensure activeBooking exists
+      if (!activeBooking || !activeBooking.bookingId) {
+          Alert.alert("Error", "Booking information missing.");
+          return;
+      }
+
+      try {
+        console.log("🚀 Calling API to Start Ride...");
+        await client.post('/bookings/start', { 
+            bookingId: activeBooking.bookingId, 
+            otp: otpInput 
+        }, { headers: { Authorization: `Bearer ${userToken}` }});
+        
+        // Success! Wait for socket to update status
+      } catch(e) { 
+          console.log("❌ Start Error:", e.response?.data);
+          const msg = e.response?.data?.error || "Connection Error";
+          Alert.alert("Start Failed", msg);
+          throw e; // Rethrow to keep modal open/loading state correct
+      }
   };
 
   const endRide = async () => {
-      await client.post('/bookings/end', { bookingId: activeBooking.bookingId }, 
-      { headers: { Authorization: `Bearer ${userToken}` }});
+      if (!activeBooking) return;
+      try {
+          await client.post('/bookings/end', { bookingId: activeBooking.bookingId }, 
+          { headers: { Authorization: `Bearer ${userToken}` }});
+      } catch (e) {
+          Alert.alert("Error", "Could not end ride.");
+      }
   };
 
-  if (loadingLocation || !location) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={{color: 'white', marginTop: 10}}>Acquiring GPS...</Text>
-      </View>
-    );
-  }
+  const onDirectionsReady = (result) => {
+      const price = Math.round(50 + (result.distance * 15)); 
+      setRouteInfo({ distance: result.distance.toFixed(1), fare: price });
+  };
+
+  if (loadingLocation || !location) return <View style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /></View>;
 
   return (
     <View style={styles.container}>
@@ -212,7 +204,12 @@ const MapScreen = ({ navigation }) => {
         customMapStyle={darkMapStyle}
       >
         {destination && <Marker coordinate={destination} pinColor={colors.primary} />}
-        {destination && GOOGLE_API_KEY ? (
+        {driverLocation && (
+            <Marker coordinate={driverLocation} title="Your Driver">
+                <View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View>
+            </Marker>
+        )}
+        {destination && GOOGLE_API_KEY && (
             <MapViewDirections
                 origin={location}
                 destination={destination}
@@ -220,30 +217,36 @@ const MapScreen = ({ navigation }) => {
                 strokeWidth={4}
                 strokeColor={colors.primary}
                 onReady={onDirectionsReady}
+                onError={() => {}}
             />
-        ) : (
-            destination && <Polyline coordinates={[location, destination]} strokeColor={colors.primary} strokeWidth={4} />
         )}
       </MapView>
 
+      {/* RIDER UI */}
       {userInfo.role === 'rider' && (
         <>
             {status === 'IDLE' && (
                 <View style={styles.searchContainer}>
-                    {/* Real Search */}
-                    <View style={{height: 50}}>
-                        <GooglePlacesAutocomplete
-                            placeholder="Where to?"
-                            onPress={handleDestinationSelect}
-                            query={{ key: GOOGLE_API_KEY, language: 'en' }}
-                            fetchDetails={true}
-                            styles={{ textInput: styles.searchInput, listView: { backgroundColor: '#1a1a1a' } }}
-                        />
-                    </View>
-                    {/* Fallback Simulation Button */}
-                    <TouchableOpacity style={styles.testBtn} onPress={simulateDestination}>
-                        <Text style={styles.testText}>📍 CLICK TO SIMULATE DESTINATION</Text>
-                    </TouchableOpacity>
+                    <GooglePlacesAutocomplete
+                        placeholder="Where to?"
+                        onPress={(data, details = null) => {
+                            if (!details) return;
+                            setDestination({ latitude: details.geometry.location.lat, longitude: details.geometry.location.lng });
+                            setStatus('SELECTING');
+                            Keyboard.dismiss();
+                        }}
+                        query={{ key: GOOGLE_API_KEY, language: 'en' }}
+                        fetchDetails={true}
+                        styles={{ 
+                            textInput: styles.searchInput, 
+                            container: { flex: 0 },
+                            listView: { backgroundColor: '#1a1a1a', zIndex: 1000 },
+                            row: { backgroundColor: '#1a1a1a' },
+                            description: { color: 'white' },
+                            predefinedPlacesDescription: { color: '#1faadb' },
+                        }}
+                        enablePoweredByContainer={false}
+                    />
                 </View>
             )}
 
@@ -258,14 +261,27 @@ const MapScreen = ({ navigation }) => {
             )}
             
             {(status === 'ACCEPTED' || status === 'ONGOING') && activeBooking && (
-                <View style={styles.infoCard}>
-                     <Text style={styles.infoTitle}>{status === 'ACCEPTED' ? 'Driver Arriving' : 'On Trip'}</Text>
-                     {activeBooking.otp && <Text style={styles.otp}>OTP: {activeBooking.otp}</Text>}
+                <View style={styles.driverInfoCard}>
+                     <View style={styles.driverHeader}>
+                        <View style={styles.avatar}><Text style={{fontSize:20}}>🚘</Text></View>
+                        <View style={{marginLeft: 15}}>
+                            <Text style={styles.driverName}>{activeBooking.driverName || 'Driver'}</Text>
+                            <Text style={styles.carInfo}>{activeBooking.carModel || 'Car'} • {activeBooking.carPlate || '...'}</Text>
+                            <Text style={styles.rating}>⭐ {activeBooking.rating || '5.0'}</Text>
+                        </View>
+                     </View>
+                     <View style={styles.divider} />
+                     <View style={styles.otpBox}>
+                        <Text style={styles.otpLabel}>OTP PIN</Text>
+                        <Text style={styles.otpCode}>{activeBooking.otp}</Text>
+                     </View>
+                     <Text style={styles.statusText}>{status === 'ACCEPTED' ? 'Driver is arriving...' : 'Ride in Progress'}</Text>
                 </View>
             )}
         </>
       )}
 
+      {/* DRIVER UI */}
       {userInfo.role === 'driver' && (
         <>
             {status === 'IDLE' && (
@@ -280,10 +296,11 @@ const MapScreen = ({ navigation }) => {
             )}
             
             {status === 'ACCEPTED' && (
-                <TouchableOpacity style={styles.actionBtn} onPress={startRide}>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => setShowOtpModal(true)}>
                     <Text style={styles.actionText}>START RIDE</Text>
                 </TouchableOpacity>
             )}
+
             {status === 'ONGOING' && (
                 <TouchableOpacity style={[styles.actionBtn, {backgroundColor: colors.error}]} onPress={endRide}>
                     <Text style={styles.actionText}>END RIDE</Text>
@@ -296,6 +313,12 @@ const MapScreen = ({ navigation }) => {
                 onAccept={acceptRide}
                 onReject={() => setIncomingRequest(null)}
             />
+
+            <OTPModal 
+                visible={showOtpModal}
+                onSubmit={startRide}
+                onCancel={() => setShowOtpModal(false)}
+            />
         </>
       )}
     </View>
@@ -305,20 +328,27 @@ const MapScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
   map: { flex: 1 },
-  loading: { flex: 1, justifyContent:'center', alignItems:'center', backgroundColor: 'black' },
+  loading: { flex: 1, justifyContent:'center', alignItems:'center', backgroundColor:'black' },
   menuBtn: { position: 'absolute', top: 50, left: 20, zIndex: 20, backgroundColor: 'white', padding: 10, borderRadius: 25, elevation: 5 },
   searchContainer: { position: 'absolute', top: 100, width: '90%', alignSelf: 'center', zIndex: 10 },
   searchInput: { backgroundColor: '#333', color: 'white', borderRadius: 10, paddingHorizontal: 10 },
-  testBtn: { marginTop: 10, backgroundColor: colors.primary, padding: 10, borderRadius: 8, alignItems: 'center' },
-  testText: { fontWeight: 'bold', fontSize: 12 },
-  infoCard: { position: 'absolute', bottom: 30, width: '90%', alignSelf: 'center', backgroundColor: '#333', padding: 20, borderRadius: 15, alignItems: 'center' },
-  infoTitle: { color: colors.primary, fontSize: 18, fontWeight: 'bold' },
-  otp: { color: 'white', fontSize: 24, marginTop: 10, letterSpacing: 5, fontWeight: 'bold' },
+  driverInfoCard: { position: 'absolute', bottom: 30, width: '90%', alignSelf: 'center', backgroundColor: '#1a1a1a', padding: 20, borderRadius: 15, borderWidth: 1, borderColor: '#333', shadowColor:'#000', elevation:10 },
+  driverHeader: { flexDirection: 'row', alignItems: 'center' },
+  avatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center' },
+  driverName: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  carInfo: { color: '#888', fontSize: 14, marginTop: 2 },
+  rating: { color: '#FFD700', fontSize: 12, marginTop: 2 },
+  divider: { height: 1, backgroundColor: '#333', marginVertical: 15 },
+  otpBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#333', padding: 10, borderRadius: 8 },
+  otpLabel: { color: '#888', fontWeight: 'bold' },
+  otpCode: { color: colors.primary, fontSize: 24, fontWeight: 'bold', letterSpacing: 5 },
+  statusText: { color: colors.success, textAlign: 'center', marginTop: 15, fontStyle: 'italic' },
   driverControls: { position: 'absolute', bottom: 50, alignSelf: 'center' },
   onlineBtn: { width: 200, padding: 15, borderRadius: 30, alignItems: 'center', shadowColor:'black', elevation:5 },
   onlineText: { color: 'black', fontWeight: 'bold', fontSize: 16 },
-  actionBtn: { position: 'absolute', bottom: 50, alignSelf: 'center', width: '90%', backgroundColor: colors.primary, padding: 20, borderRadius: 10, alignItems: 'center' },
-  actionText: { color: 'black', fontWeight: '900', fontSize: 18 }
+  actionBtn: { position: 'absolute', bottom: 50, alignSelf: 'center', width: '90%', backgroundColor: colors.primary, padding: 20, borderRadius: 10, alignItems: 'center', elevation: 10 },
+  actionText: { color: 'black', fontWeight: '900', fontSize: 18 },
+  carMarker: { backgroundColor: 'white', padding: 5, borderRadius: 15, elevation: 5 }
 });
 
 const darkMapStyle = [

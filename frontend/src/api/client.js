@@ -1,16 +1,16 @@
-// src/api/client.js
 import axios from 'axios';
 
-// ⚠️ REPLACE THIS with your PC's Local IP Address (Run 'ipconfig' or 'ifconfig')
-// Example: 'http://192.168.29.183:3000/api'
-const BASE_URL = 'http://192.168.1.109:3000/api'; 
+// Load from .env or fallback to localhost (which won't work on Android but is safe default)
+const BASE_URL = process.env.EXPO_PUBLIC_SERVER_URL 
+  ? `${process.env.EXPO_PUBLIC_SERVER_URL}/api`
+  : 'http://192.168.1.109:3000/api'; 
+
+console.log(`🚀 API Configured for: ${BASE_URL}`);
 
 const client = axios.create({
   baseURL: BASE_URL,
   timeout: 10000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  headers: { 'Content-Type': 'application/json' },
 });
 
 export default client;

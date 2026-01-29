@@ -16,7 +16,7 @@ const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) 
       
       <View style={styles.row}>
         <Text style={styles.label}>Total Fare</Text>
-        <Text style={styles.price}>${fare}</Text>
+        <Text style={styles.price}>₹{fare}</Text>
       </View>
 
       <View style={styles.buttons}>

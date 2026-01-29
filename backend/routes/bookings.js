@@ -1,20 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const { 
-    requestRide, 
-    acceptRide, 
-    rejectRide, 
-    startRide, 
-    endRide,
-    getRideHistory 
-} = require('../controllers/bookingController');
-const { protect } = require('../middleware/authMiddleware');
+const bookingController = require('../controllers/bookingController');
+const authMiddleware = require('../middleware/authMiddleware');
 
-router.post('/request', protect, requestRide);
-router.post('/accept', protect, acceptRide); 
-router.post('/reject', protect, rejectRide);
-router.post('/start', protect, startRide);
-router.post('/end', protect, endRide);
-router.get('/history', protect, getRideHistory);
+// Debugging: Check if functions are loaded correctly
+if (typeof bookingController.requestRide !== 'function') {
+    console.error("❌ ERROR: bookingController.requestRide is not a function. Check controller exports.");
+}
+if (typeof authMiddleware !== 'function') {
+    console.error("❌ ERROR: authMiddleware is not a function. Check middleware exports.");
+}
+
+// Routes
+router.post('/request', authMiddleware, bookingController.requestRide);
+router.post('/accept', authMiddleware, bookingController.acceptRide);
+router.post('/start', authMiddleware, bookingController.startRide);
+router.post('/end', authMiddleware, bookingController.endRide);
+router.get('/history', authMiddleware, bookingController.getHistory);
 
 module.exports = router;

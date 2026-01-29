@@ -22,7 +22,7 @@ const PaymentScreen = ({ route, navigation }) => {
     <View style={styles.container}>
       <Ionicons name="card" size={80} color={colors.primary} style={{marginBottom: 20}} />
       <Text style={styles.title}>Payment Due</Text>
-      <Text style={styles.amount}>${fare}</Text>
+      <Text style={styles.amount}>₹{fare}</Text>
       
       <View style={styles.cardInfo}>
         <Text style={styles.cardText}>💳  •••• •••• •••• 4242</Text>

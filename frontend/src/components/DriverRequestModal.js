@@ -18,7 +18,7 @@ const DriverRequestModal = ({ visible, request, onAccept, onReject }) => {
             <View style={{height: 10}} />
             
             <Text style={styles.label}>FARE</Text>
-            <Text style={styles.fare}>${request.fare}</Text>
+            <Text style={styles.fare}>₹{request.fare}</Text>
             
             {request.surgeMultiplier > 1 && (
                  <Text style={styles.surge}>⚡ Surge {request.surgeMultiplier}x Active</Text>
