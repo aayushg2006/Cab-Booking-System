@@ -1,3 +1,4 @@
+// backend/server.js
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -16,14 +17,12 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// Store IO in app so controllers can use it
 app.set('socketio', io);
 
-// --- 🌍 GLOBAL STATE (In-Memory Redis Replacement) ---
-global.activeDrivers = new Map(); // { driverId: { socketId, lat, lng } }
-global.activeRiders = new Map();  // { riderId: { socketId, lat, lng } }
+// --- 🌍 GLOBAL STATE ---
+global.activeDrivers = new Map(); 
+global.activeRiders = new Map(); 
 
-// Database Check
 pool.getConnection((err, connection) => {
     if (err) console.error('❌ Database Connection Failed:', err.message);
     else {
@@ -41,26 +40,28 @@ io.on('connection', (socket) => {
 
     // 1. Driver Location Updates
     socket.on('driverLocation', (data) => {
+        if (!data.driverId) {
+            console.log("⚠️ Received driverLocation without driverId!");
+            return;
+        }
+
         global.activeDrivers.set(data.driverId, {
             socketId: socket.id,
             lat: parseFloat(data.lat),
             lng: parseFloat(data.lng)
         });
+        
+        // Log every few seconds in a real app, but here we log every update to debug
+        console.log(`📍 Driver ${data.driverId} Online at [${data.lat}, ${data.lng}]`);
     });
 
-    // 2. Rider Joins (needed for demand calculation)
-    socket.on('joinRider', (data) => {
-        // data = { userId: 1, lat: ..., lng: ... }
-        global.activeRiders.set(data.userId, {
-            socketId: socket.id,
-            lat: parseFloat(data.lat || 0),
-            lng: parseFloat(data.lng || 0)
-        });
-        console.log(`👤 Rider ${data.userId} Active`);
+    // 2. Rider Joins
+    socket.on('joinRider', (userId) => {
+        global.activeRiders.set(userId, { socketId: socket.id });
+        console.log(`👤 Rider ${userId} Joined`);
     });
 
     socket.on('disconnect', () => {
-        // Cleanup Driver
         for (let [key, value] of global.activeDrivers.entries()) {
             if (value.socketId === socket.id) {
                 global.activeDrivers.delete(key);
@@ -68,33 +69,7 @@ io.on('connection', (socket) => {
                 break;
             }
         }
-        // Cleanup Rider
-        for (let [key, value] of global.activeRiders.entries()) {
-            if (value.socketId === socket.id) {
-                global.activeRiders.delete(key);
-                console.log(`❌ Rider ${key} disconnected`);
-                break;
-            }
-        }
     });
-});
-
-// --- 🛠 TEST UTILITY ROUTES (For Thunder Client ONLY) ---
-// This allows you to simulate a driver being "Online" without a real app
-app.post('/api/test/force-online', (req, res) => {
-    const { driverId, lat, lng } = req.body;
-    
-    // Fake a socket ID
-    const fakeSocketId = `TEST_SOCKET_${Date.now()}`;
-    
-    global.activeDrivers.set(driverId, {
-        socketId: fakeSocketId,
-        lat: parseFloat(lat),
-        lng: parseFloat(lng)
-    });
-
-    console.log(`🔧 TEST MODE: Forced Driver ${driverId} Online at [${lat}, ${lng}]`);
-    res.json({ message: `Driver ${driverId} is now online (Simulated)`, fakeSocketId });
 });
 
 const PORT = process.env.PORT || 3000;

@@ -1,6 +1,8 @@
+// frontend/src/context/AuthContext.js
 import React, { createContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
+import { Alert } from 'react-native';
 
 export const AuthContext = createContext();
 
@@ -9,7 +11,6 @@ export const AuthProvider = ({ children }) => {
   const [userInfo, setUserInfo] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Check if user is logged in when app opens
   const isLoggedIn = async () => {
     try {
       setIsLoading(true);
@@ -35,16 +36,22 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await client.post('/auth/login', { email, password });
       
-      if (res.data.token) {
-        console.log('Login Success:', res.data.user.email);
-        setUserInfo(res.data.user);
-        setUserToken(res.data.token);
-        AsyncStorage.setItem('userToken', res.data.token);
-        AsyncStorage.setItem('userInfo', JSON.stringify(res.data.user));
+      // 🛠 FIX: Ensure driverId exists if role is driver
+      let user = res.data.user;
+      if (user.role === 'driver' && !user.driverId) {
+          user.driverId = user.id; 
       }
+
+      setUserInfo(user);
+      setUserToken(res.data.token);
+
+      AsyncStorage.setItem('userToken', res.data.token);
+      AsyncStorage.setItem('userInfo', JSON.stringify(user));
+      console.log("✅ Login Successful. User:", user);
+
     } catch (e) {
-      console.log('Login Failed:', e.response?.data?.error);
-      alert(e.response?.data?.error || 'Invalid Credentials');
+      console.log('Login Failed:', e);
+      Alert.alert('Login Failed', e.response?.data?.error || 'Something went wrong');
     }
     setIsLoading(false);
   };
@@ -52,18 +59,17 @@ export const AuthProvider = ({ children }) => {
   const register = async (userData) => {
     setIsLoading(true);
     try {
-        // Correct endpoint matching your backend route
         const res = await client.post('/auth/register', userData);
-        
-        if (res.data.token) {
-            setUserInfo(res.data.user);
-            setUserToken(res.data.token);
-            AsyncStorage.setItem('userToken', res.data.token);
-            AsyncStorage.setItem('userInfo', JSON.stringify(res.data.user));
-        }
+        let user = res.data.user;
+        if (user.role === 'driver' && !user.driverId) user.driverId = user.id;
+
+        setUserInfo(user);
+        setUserToken(res.data.token);
+        AsyncStorage.setItem('userToken', res.data.token);
+        AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
         console.log('Register Failed:', e.response?.data?.error);
-        alert(e.response?.data?.error || 'Registration Failed');
+        Alert.alert('Registration Failed', e.response?.data?.error || 'Error');
     }
     setIsLoading(false);
   };
