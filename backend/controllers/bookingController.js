@@ -1,4 +1,8 @@
+// backend/controllers/bookingController.js
 const pool = require('../config/db');
+
+// ⏳ TIMEOUT MANAGER
+const bookingTimeouts = new Map(); // Stores { bookingId: timeoutID }
 
 // Helper: Calculate distance
 function calculateDistance(lat1, lon1, lat2, lon2) {
@@ -9,17 +13,31 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-exports.confirmPayment = (req, res) => {
-    const { bookingId } = req.body;
-    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
-    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
-    pool.query(sql, [bookingId], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: "Payment successful", status: 'paid' });
-    });
+// 🆕 Helper: Start 15s Timer for a Driver
+const startBookingTimer = (bookingId, driverId, io) => {
+    // Clear existing if any
+    if (bookingTimeouts.has(bookingId)) {
+        clearTimeout(bookingTimeouts.get(bookingId));
+    }
+
+    const timer = setTimeout(() => {
+        console.log(`⏰ Booking ${bookingId} timed out for Driver ${driverId}`);
+        
+        // 1. Notify the Driver that they were too slow (Close their modal)
+        const driverSocketId = global.driverSockets ? global.driverSockets.get(driverId) : null;
+        if (driverSocketId && io) {
+            io.to(driverSocketId).emit('requestTimeout'); 
+        }
+
+        // 2. Treat as Rejection -> Find Next Driver
+        exports.handleRejection(bookingId, driverId, io);
+        
+    }, 15000); // ⏱️ 15 SECONDS
+
+    bookingTimeouts.set(bookingId, timer);
 };
 
-// 🆕 Helper Function: Find Next Driver (Used by Request & Rejection)
+// 🆕 Helper: Find Next Driver
 const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds, io, res = null) => {
     let query = `
         SELECT id, lat, lng, 
@@ -30,7 +48,6 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
 
     const queryParams = [pickupLat, pickupLng, pickupLat];
 
-    // 🛡️ EXCLUDE rejected drivers
     if (excludedDriverIds.length > 0) {
         query += ` AND id NOT IN (?)`;
         queryParams.push(excludedDriverIds);
@@ -46,12 +63,8 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
         }
 
         if (rows.length === 0) {
-            // No drivers left!
-            if (res) return res.status(404).json({ message: "No drivers available" });
-            
-            // Notify Rider via Socket that search failed
-            // (We'd need to fetch riderId to do this properly, but for now we log it)
             console.log(`⚠️ No more drivers available for Booking ${bookingId}`);
+            if (res) return res.status(404).json({ message: "No drivers available" });
             return;
         }
 
@@ -64,7 +77,7 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
             // Notify Driver
             const driverSocketId = global.driverSockets ? global.driverSockets.get(nextDriver.id) : null;
             if (driverSocketId && io) {
-                // Fetch extra booking details if needed (simplified here)
+                // Fetch extra details
                 pool.query(`SELECT * FROM bookings WHERE id = ?`, [bookingId], (err, bRows) => {
                     if(!bRows || bRows.length === 0) return;
                     const booking = bRows[0];
@@ -81,6 +94,9 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
                         fare: booking.fare,
                         dist: nextDriver.distance.toFixed(1)
                     });
+
+                    // ⏳ START TIMER FOR THIS NEW DRIVER
+                    startBookingTimer(bookingId, nextDriver.id, io);
                 });
             }
 
@@ -92,7 +108,6 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
 exports.requestRide = (req, res) => {
     const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare } = req.body;
     
-    // 1. Create Booking FIRST (with empty rejected list)
     const otp = Math.floor(1000 + Math.random() * 9000);
     const sql = `INSERT INTO bookings (rider_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp, rejected_drivers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '[]')`;
 
@@ -102,31 +117,30 @@ exports.requestRide = (req, res) => {
         const bookingId = result.insertId;
         const io = req.app.get('socketio');
 
-        // 2. Find First Driver
         findAndNotifyDriver(bookingId, pickupLat, pickupLng, [], io, res);
     });
 };
 
-// 🆕 NEW: Handle Rejection
 exports.handleRejection = (bookingId, driverId, io) => {
-    // 1. Get current list of rejected drivers
+    // 🛑 STOP TIMER if rejection was manual
+    if (bookingTimeouts.has(bookingId)) {
+        clearTimeout(bookingTimeouts.get(bookingId));
+        bookingTimeouts.delete(bookingId);
+    }
+
     pool.query(`SELECT rejected_drivers, pickup_lat, pickup_lng FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
         if (err || rows.length === 0) return;
 
         const booking = rows[0];
         let rejectedList = booking.rejected_drivers || [];
         
-        // Add current driver to reject list
         if (!rejectedList.includes(driverId)) {
             rejectedList.push(driverId);
         }
 
-        // 2. Save updated list to DB
         pool.query(`UPDATE bookings SET rejected_drivers = ? WHERE id = ?`, [JSON.stringify(rejectedList), bookingId], (err) => {
             if (err) return;
-
-            // 3. Find NEXT Driver
-            console.log(`🚫 Driver ${driverId} declined. Finding next...`);
+            console.log(`🚫 Driver ${driverId} rejected/timed out. Finding next...`);
             findAndNotifyDriver(bookingId, booking.pickup_lat, booking.pickup_lng, rejectedList, io);
         });
     });
@@ -134,10 +148,24 @@ exports.handleRejection = (bookingId, driverId, io) => {
 
 exports.acceptRide = (req, res) => {
     const { bookingId, driverId } = req.body;
-    pool.query(`UPDATE bookings SET status = 'accepted', driver_id = ? WHERE id = ?`, [driverId, bookingId], (err) => {
+    
+    // 🛑 STOP TIMER
+    if (bookingTimeouts.has(bookingId)) {
+        clearTimeout(bookingTimeouts.get(bookingId));
+        bookingTimeouts.delete(bookingId);
+    }
+
+    // 🔒 Security Check: Only accept if the booking is currently assigned to THIS driver
+    // (Prevents a driver from accepting AFTER timeout)
+    const safetySql = `UPDATE bookings SET status = 'accepted' WHERE id = ? AND driver_id = ? AND status = 'pending'`;
+
+    pool.query(safetySql, [bookingId, driverId], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        // Fetch Driver Details to send to Rider
+        if (result.affectedRows === 0) {
+            return res.status(400).json({ error: "Ride request expired or already taken." });
+        }
+
         const driverQuery = `SELECT u.name, u.email, u.phone, d.car_model, d.car_plate FROM drivers d JOIN users u ON d.user_id = u.id WHERE d.id = ?`;
         pool.query(driverQuery, [driverId], (err, rows) => {
             const driverInfo = rows && rows[0] ? rows[0] : {};
@@ -154,6 +182,16 @@ exports.acceptRide = (req, res) => {
             });
             res.json({ message: "Ride Accepted" });
         });
+    });
+};
+
+exports.confirmPayment = (req, res) => {
+    const { bookingId } = req.body;
+    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
+    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
+    pool.query(sql, [bookingId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Payment successful", status: 'paid' });
     });
 };
 

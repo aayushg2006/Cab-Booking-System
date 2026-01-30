@@ -139,6 +139,12 @@ const MapScreen = ({ navigation }) => {
 
     socket.on('newRideRequest', (data) => setIncomingRequest(data));
 
+    // 🆕 NEW: Close modal if server says "Time's up!"
+    socket.on('requestTimeout', () => {
+        Alert.alert("Missed", "You missed the ride request.");
+        setIncomingRequest(null);
+    });
+
     return () => socket.removeAllListeners();
   }, [socket, activeBooking, status]);
 
