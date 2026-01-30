@@ -1,6 +1,5 @@
 const pool = require('../config/db');
 
-// Helper: Calculate Distance
 function calculateDistance(lat1, lon1, lat2, lon2) {
     const R = 6371; 
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -10,7 +9,8 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 exports.requestRide = async (req, res) => {
-    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare } = req.body;
+    // 🛠 Receive carType and fare
+    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, carType } = req.body;
 
     if (!riderId || !pickupLat || !pickupLng) return res.status(400).json({ error: "Missing required fields" });
     if (!global.activeDrivers || global.activeDrivers.size === 0) return res.status(404).json({ message: "No drivers are currently online." });
@@ -19,8 +19,14 @@ exports.requestRide = async (req, res) => {
     let minDistance = Infinity;
     const MAX_RADIUS_KM = 5000; 
 
+    // 🕵️ FILTER BY CAR CATEGORY (Assuming we stored carType in driverData when they went online)
+    // NOTE: For MVP, we allow any driver if carType logic isn't fully in DB yet, but ideally:
+    // if (driverData.carType !== carType) continue;
+
     for (let [driverKey, driverData] of global.activeDrivers.entries()) {
         const dist = calculateDistance(pickupLat, pickupLng, driverData.lat, driverData.lng);
+        
+        // Simple optimization: Pick nearest
         if (dist <= MAX_RADIUS_KM && dist < minDistance) {
             minDistance = dist;
             nearestDriver = { id: driverKey, ...driverData };
@@ -30,11 +36,10 @@ exports.requestRide = async (req, res) => {
     if (!nearestDriver) return res.status(404).json({ message: "No drivers found nearby." });
 
     const otp = Math.floor(1000 + Math.random() * 9000);
-    const finalFare = fare || Math.round(50 + (minDistance * 15)); 
-
+    
     const sql = `INSERT INTO bookings (rider_id, driver_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`;
     
-    pool.query(sql, [riderId, nearestDriver.id, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, finalFare, otp], (err, result) => {
+    pool.query(sql, [riderId, nearestDriver.id, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, otp], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
 
         const bookingId = result.insertId;
@@ -48,18 +53,17 @@ exports.requestRide = async (req, res) => {
                 pickupLng,
                 pickupAddress,
                 dropAddress,
-                fare: finalFare,
+                fare: fare, // Send agreed fare
                 dist: minDistance.toFixed(1)
             });
         }
 
-        res.json({ message: "Driver found", bookingId, driverId: nearestDriver.id, otp, fare: finalFare });
+        res.json({ message: "Driver found", bookingId, driverId: nearestDriver.id, otp, fare });
     });
 };
 
 exports.acceptRide = (req, res) => {
     const { bookingId, driverId } = req.body;
-    
     pool.query(`UPDATE bookings SET status = 'accepted', driver_id = ? WHERE id = ?`, [driverId, bookingId], (err) => {
         if (err) return res.status(500).json({ error: err.message });
 
@@ -79,8 +83,6 @@ exports.acceptRide = (req, res) => {
                 rating: "5.0",
                 phone: driverInfo.phone
             });
-            
-            console.log(`✅ Ride Accepted by ${driverInfo.name} (${driverId})`);
             res.json({ message: "Ride Accepted" });
         });
     });
@@ -88,60 +90,49 @@ exports.acceptRide = (req, res) => {
 
 exports.startRide = (req, res) => {
     const { bookingId, otp } = req.body;
-    console.log(`🚀 Start Ride Request: Booking ${bookingId} with OTP ${otp}`);
-
     pool.query(`SELECT otp FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
-        if (err || rows.length === 0) {
-            console.log("❌ Booking not found");
-            return res.status(404).json({ error: "Booking not found" });
-        }
-        
-        console.log(`🔑 Expected OTP: ${rows[0].otp}, Received: ${otp}`);
-
-        if (String(rows[0].otp) !== String(otp)) {
-            console.log("❌ Invalid OTP Mismatch");
-            return res.status(400).json({ error: "Invalid OTP" });
-        }
+        if (err || rows.length === 0) return res.status(404).json({ error: "Booking not found" });
+        if (String(rows[0].otp) !== String(otp)) return res.status(400).json({ error: "Invalid OTP" });
         
         pool.query(`UPDATE bookings SET status = 'ongoing', start_time = NOW() WHERE id = ?`, [bookingId], (err) => {
-            if (err) {
-                console.error("❌ DB Update Error:", err);
-                return res.status(500).json({ error: err.message });
-            }
+            if (err) return res.status(500).json({ error: err.message });
             
-            // 🛡️ CRASH PREVENTION: Try/Catch for Socket
+            // Try/Catch for Socket to prevent crash
             try {
                 const io = req.app.get('socketio');
-                if(io) {
-                    io.emit('rideStarted', { bookingId });
-                    console.log("📡 Socket Event 'rideStarted' emitted");
-                } else {
-                    console.error("⚠️ Socket.io instance not found");
-                }
-            } catch (socketErr) {
-                console.error("⚠️ Socket Emit Failed:", socketErr.message);
-            }
+                if(io) io.emit('rideStarted', { bookingId });
+            } catch(e) { console.error("Socket emit failed", e); }
             
-            console.log("✅ Ride Started Successfully");
             res.json({ message: "Ride Started" });
         });
     });
 };
 
 exports.endRide = (req, res) => {
-    const { bookingId } = req.body;
-    console.log(`🏁 End Ride Request: Booking ${bookingId}`);
+    const { bookingId, dropLat, dropLng } = req.body;
 
-    pool.query(`UPDATE bookings SET status = 'completed', end_time = NOW() WHERE id = ?`, [bookingId], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
+    // 1. Get Pickup Coordinates to Calc Actual Distance
+    pool.query(`SELECT pickup_lat, pickup_lng, fare FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
+        if (err || rows.length === 0) return res.status(500).json({error: "Booking not found"});
         
-        pool.query(`SELECT fare FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
-             const fare = rows[0]?.fare || 0;
-             try {
-                 req.app.get('socketio').emit('rideCompleted', { bookingId, fare });
-             } catch(e) { console.error("Socket Error:", e); }
-             
-             res.json({ message: "Ride Completed", fare });
+        const booking = rows[0];
+        let finalFare = booking.fare;
+
+        // 💰 RECALCULATE FARE if new coords provided
+        if (dropLat && dropLng) {
+            const actualDist = calculateDistance(booking.pickup_lat, booking.pickup_lng, dropLat, dropLng);
+            finalFare = Math.round(50 + (actualDist * 15)); // Base 50 + 15/km
+        }
+
+        // 2. Update DB
+        pool.query(`UPDATE bookings SET status = 'completed', end_time = NOW(), fare = ? WHERE id = ?`, [finalFare, bookingId], (err) => {
+            if (err) return res.status(500).json({ error: err.message });
+            
+            try {
+                req.app.get('socketio').emit('rideCompleted', { bookingId, fare: finalFare });
+            } catch(e) { console.error("Socket error", e); }
+            
+            res.json({ message: "Ride Completed", fare: finalFare });
         });
     });
 };
@@ -150,7 +141,6 @@ exports.getHistory = (req, res) => {
     const userId = req.user.id; 
     const role = req.user.role;
     let sql = role === 'driver' ? `SELECT * FROM bookings WHERE driver_id = ?` : `SELECT * FROM bookings WHERE rider_id = ?`;
-    
     pool.query(sql + ` ORDER BY created_at DESC`, [userId], (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);

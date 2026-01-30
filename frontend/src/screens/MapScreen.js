@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useContext, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator, Image, Keyboard } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator, Image, Keyboard, Linking, Platform } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions'; 
 import * as Location from 'expo-location';
@@ -24,7 +24,7 @@ const MapScreen = ({ navigation }) => {
 
   const [location, setLocation] = useState(null); 
   const [destination, setDestination] = useState(null);
-  const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0 });
+  const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0 }); // Base Fare
   const [status, setStatus] = useState('IDLE'); 
   const [activeBooking, setActiveBooking] = useState(null);
   const [isDriverOnline, setIsDriverOnline] = useState(false);
@@ -58,7 +58,6 @@ const MapScreen = ({ navigation }) => {
             socket.emit('driverLocation', { driverId: dId, lat: loc.coords.latitude, lng: loc.coords.longitude });
         }
       } catch (err) {
-          console.log("Loc Error:", err);
           setLoadingLocation(false);
       }
     })();
@@ -83,20 +82,27 @@ const MapScreen = ({ navigation }) => {
     });
 
     socket.on('rideStarted', () => {
-        console.log("⚡ Socket: Ride Started");
         setShowOtpModal(false);
-        // Delay status update slightly to let modal close
         setTimeout(() => {
             setStatus('ONGOING');
-            Alert.alert("Ride Started", "Have a safe trip!");
-        }, 300);
+            if (userInfo.role === 'rider') Alert.alert("Ride Started", "Have a safe trip!");
+        }, 500); 
     });
 
     socket.on('rideCompleted', ({ fare }) => {
         setStatus('COMPLETED');
-        Alert.alert('Ride Completed', `Total Fare: ₹${fare}`);
-        navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId });
-        setStatus('IDLE');
+        
+        // 🚀 CRITICAL FIX: Only redirect Rider to payment
+        if (userInfo.role === 'rider') {
+            Alert.alert('Ride Completed', `Total Fare: ₹${fare}`);
+            navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId });
+        } else {
+            // Driver View
+            Alert.alert('Ride Ended', `Collect ₹${fare} from the rider.`);
+            setStatus('IDLE'); // Reset Driver
+        }
+        
+        // Common Reset
         setDestination(null);
         setActiveBooking(null);
         setDriverLocation(null);
@@ -109,9 +115,20 @@ const MapScreen = ({ navigation }) => {
     return () => socket.removeAllListeners();
   }, [socket, activeBooking]);
 
+  // --- UTILS ---
+  const openExternalMap = (lat, lng, label = 'Destination') => {
+    const scheme = Platform.select({ ios: 'maps:0,0?q=', android: 'geo:0,0?q=' });
+    const latLng = `${lat},${lng}`;
+    const url = Platform.select({
+      ios: `${scheme}${label}@${latLng}`,
+      android: `${scheme}${latLng}(${label})`
+    });
+    Linking.openURL(url);
+  };
+
   // --- ACTIONS ---
 
-  const requestRide = async () => {
+  const requestRide = async (carType, calculatedFare) => {
     setStatus('SEARCHING');
     try {
         const res = await client.post('/bookings/request', {
@@ -122,7 +139,8 @@ const MapScreen = ({ navigation }) => {
             dropLng: destination.longitude,
             pickupAddress: "My Location",
             dropAddress: "Destination",
-            fare: routeInfo.fare
+            fare: calculatedFare, // Calculated based on category
+            carType: carType // 'hatchback', 'sedan', etc.
         }, { headers: { Authorization: `Bearer ${userToken}` }});
         
         setActiveBooking({ bookingId: res.data.bookingId, otp: res.data.otp }); 
@@ -144,39 +162,47 @@ const MapScreen = ({ navigation }) => {
         setStatus('ACCEPTED');
         setActiveBooking(incomingRequest);
         setIncomingRequest(null);
+        
+        // Auto-open Maps for pickup
+        Alert.alert("Navigate", "Open Maps to Pickup?", [
+            { text: "No" },
+            { text: "Yes", onPress: () => openExternalMap(incomingRequest.pickupLat, incomingRequest.pickupLng, 'Pickup') }
+        ]);
+
     } catch (err) {
         Alert.alert('Error', 'Could not accept ride.');
     }
   };
 
   const startRide = async (otpInput) => {
-      // 🛡️ CRASH FIX: Ensure activeBooking exists
-      if (!activeBooking || !activeBooking.bookingId) {
-          Alert.alert("Error", "Booking information missing.");
-          return;
-      }
-
+      if (!activeBooking) return;
       try {
-        console.log("🚀 Calling API to Start Ride...");
+        setShowOtpModal(false); 
         await client.post('/bookings/start', { 
             bookingId: activeBooking.bookingId, 
             otp: otpInput 
         }, { headers: { Authorization: `Bearer ${userToken}` }});
-        
-        // Success! Wait for socket to update status
       } catch(e) { 
-          console.log("❌ Start Error:", e.response?.data);
-          const msg = e.response?.data?.error || "Connection Error";
-          Alert.alert("Start Failed", msg);
-          throw e; // Rethrow to keep modal open/loading state correct
+          setShowOtpModal(true); 
+          Alert.alert("Invalid OTP");
       }
   };
 
   const endRide = async () => {
       if (!activeBooking) return;
       try {
-          await client.post('/bookings/end', { bookingId: activeBooking.bookingId }, 
-          { headers: { Authorization: `Bearer ${userToken}` }});
+          // Send current location to calculate REAL distance
+          let endLoc = location; 
+          try {
+             let loc = await Location.getCurrentPositionAsync({});
+             endLoc = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+          } catch(e) {}
+
+          await client.post('/bookings/end', { 
+              bookingId: activeBooking.bookingId,
+              dropLat: endLoc.latitude,
+              dropLng: endLoc.longitude
+          }, { headers: { Authorization: `Bearer ${userToken}` }});
       } catch (e) {
           Alert.alert("Error", "Could not end ride.");
       }
@@ -204,21 +230,9 @@ const MapScreen = ({ navigation }) => {
         customMapStyle={darkMapStyle}
       >
         {destination && <Marker coordinate={destination} pinColor={colors.primary} />}
-        {driverLocation && (
-            <Marker coordinate={driverLocation} title="Your Driver">
-                <View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View>
-            </Marker>
-        )}
+        {driverLocation && <Marker coordinate={driverLocation} title="Your Driver"><View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View></Marker>}
         {destination && GOOGLE_API_KEY && (
-            <MapViewDirections
-                origin={location}
-                destination={destination}
-                apikey={GOOGLE_API_KEY}
-                strokeWidth={4}
-                strokeColor={colors.primary}
-                onReady={onDirectionsReady}
-                onError={() => {}}
-            />
+            <MapViewDirections origin={location} destination={destination} apikey={GOOGLE_API_KEY} strokeWidth={4} strokeColor={colors.primary} onReady={onDirectionsReady} />
         )}
       </MapView>
 
@@ -262,11 +276,12 @@ const MapScreen = ({ navigation }) => {
             
             {(status === 'ACCEPTED' || status === 'ONGOING') && activeBooking && (
                 <View style={styles.driverInfoCard}>
+                     {/* Driver details UI (Same as before) */}
                      <View style={styles.driverHeader}>
                         <View style={styles.avatar}><Text style={{fontSize:20}}>🚘</Text></View>
                         <View style={{marginLeft: 15}}>
                             <Text style={styles.driverName}>{activeBooking.driverName || 'Driver'}</Text>
-                            <Text style={styles.carInfo}>{activeBooking.carModel || 'Car'} • {activeBooking.carPlate || '...'}</Text>
+                            <Text style={styles.carInfo}>{activeBooking.carModel}</Text>
                             <Text style={styles.rating}>⭐ {activeBooking.rating || '5.0'}</Text>
                         </View>
                      </View>
@@ -286,39 +301,40 @@ const MapScreen = ({ navigation }) => {
         <>
             {status === 'IDLE' && (
                 <View style={styles.driverControls}>
-                    <TouchableOpacity 
-                        style={[styles.onlineBtn, { backgroundColor: isDriverOnline ? colors.error : colors.success }]}
-                        onPress={() => setIsDriverOnline(!isDriverOnline)}
-                    >
+                    <TouchableOpacity style={[styles.onlineBtn, { backgroundColor: isDriverOnline ? colors.error : colors.success }]} onPress={() => setIsDriverOnline(!isDriverOnline)}>
                         <Text style={styles.onlineText}>{isDriverOnline ? 'GO OFFLINE' : 'GO ONLINE'}</Text>
                     </TouchableOpacity>
                 </View>
             )}
             
             {status === 'ACCEPTED' && (
-                <TouchableOpacity style={styles.actionBtn} onPress={() => setShowOtpModal(true)}>
-                    <Text style={styles.actionText}>START RIDE</Text>
-                </TouchableOpacity>
+                <View style={styles.driverControls}>
+                    {/* Navigation Button */}
+                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.pickupLat, activeBooking.pickupLng, 'Pickup')}>
+                        <Ionicons name="navigate" size={24} color="white" />
+                        <Text style={styles.navText}>Navigate</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => setShowOtpModal(true)}>
+                        <Text style={styles.actionText}>START RIDE</Text>
+                    </TouchableOpacity>
+                </View>
             )}
 
             {status === 'ONGOING' && (
-                <TouchableOpacity style={[styles.actionBtn, {backgroundColor: colors.error}]} onPress={endRide}>
-                    <Text style={styles.actionText}>END RIDE</Text>
-                </TouchableOpacity>
+                <View style={styles.driverControls}>
+                    {/* Navigation Button */}
+                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.dropLat || 0, activeBooking.dropLng || 0, 'Drop')}>
+                        <Ionicons name="navigate" size={24} color="white" />
+                        <Text style={styles.navText}>Navigate</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.actionBtn, {backgroundColor: colors.error}]} onPress={endRide}>
+                        <Text style={styles.actionText}>END RIDE</Text>
+                    </TouchableOpacity>
+                </View>
             )}
 
-            <DriverRequestModal 
-                visible={!!incomingRequest}
-                request={incomingRequest}
-                onAccept={acceptRide}
-                onReject={() => setIncomingRequest(null)}
-            />
-
-            <OTPModal 
-                visible={showOtpModal}
-                onSubmit={startRide}
-                onCancel={() => setShowOtpModal(false)}
-            />
+            <DriverRequestModal visible={!!incomingRequest} request={incomingRequest} onAccept={acceptRide} onReject={() => setIncomingRequest(null)} />
+            <OTPModal visible={showOtpModal} onSubmit={startRide} onCancel={() => setShowOtpModal(false)} />
         </>
       )}
     </View>
@@ -343,11 +359,13 @@ const styles = StyleSheet.create({
   otpLabel: { color: '#888', fontWeight: 'bold' },
   otpCode: { color: colors.primary, fontSize: 24, fontWeight: 'bold', letterSpacing: 5 },
   statusText: { color: colors.success, textAlign: 'center', marginTop: 15, fontStyle: 'italic' },
-  driverControls: { position: 'absolute', bottom: 50, alignSelf: 'center' },
+  driverControls: { position: 'absolute', bottom: 50, alignSelf: 'center', width: '100%', alignItems:'center' },
   onlineBtn: { width: 200, padding: 15, borderRadius: 30, alignItems: 'center', shadowColor:'black', elevation:5 },
   onlineText: { color: 'black', fontWeight: 'bold', fontSize: 16 },
-  actionBtn: { position: 'absolute', bottom: 50, alignSelf: 'center', width: '90%', backgroundColor: colors.primary, padding: 20, borderRadius: 10, alignItems: 'center', elevation: 10 },
+  actionBtn: { width: '80%', backgroundColor: colors.primary, padding: 20, borderRadius: 10, alignItems: 'center', elevation: 10, marginBottom: 10 },
   actionText: { color: 'black', fontWeight: '900', fontSize: 18 },
+  navBtn: { flexDirection:'row', backgroundColor: '#4285F4', padding: 12, borderRadius: 25, alignItems: 'center', justifyContent:'center', marginBottom: 15, width: 140 },
+  navText: { color: 'white', fontWeight: 'bold', marginLeft: 5 },
   carMarker: { backgroundColor: 'white', padding: 5, borderRadius: 15, elevation: 5 }
 });
 
