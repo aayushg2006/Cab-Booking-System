@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 
+// Helper: Calculate distance
 function calculateDistance(lat1, lon1, lat2, lon2) {
     const R = 6371; 
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -8,53 +9,126 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-exports.requestRide = async (req, res) => {
-    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, carType } = req.body;
+exports.confirmPayment = (req, res) => {
+    const { bookingId } = req.body;
+    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
+    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
+    pool.query(sql, [bookingId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Payment successful", status: 'paid' });
+    });
+};
 
-    if (!riderId || !pickupLat || !pickupLng) return res.status(400).json({ error: "Missing required fields" });
-    if (!global.activeDrivers || global.activeDrivers.size === 0) return res.status(404).json({ message: "No drivers are currently online." });
+// 🆕 Helper Function: Find Next Driver (Used by Request & Rejection)
+const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds, io, res = null) => {
+    let query = `
+        SELECT id, lat, lng, 
+        ( 6371 * acos( cos( radians(?) ) * cos( radians( lat ) ) * cos( radians( lng ) - radians(?) ) + sin( radians(?) ) * sin( radians( lat ) ) ) ) AS distance 
+        FROM drivers 
+        WHERE status = 'online' 
+    `;
 
-    let nearestDriver = null;
-    let minDistance = Infinity;
-    const MAX_RADIUS_KM = 5000; 
+    const queryParams = [pickupLat, pickupLng, pickupLat];
 
-    for (let [driverKey, driverData] of global.activeDrivers.entries()) {
-        const dist = calculateDistance(pickupLat, pickupLng, driverData.lat, driverData.lng);
-        if (dist <= MAX_RADIUS_KM && dist < minDistance) {
-            minDistance = dist;
-            nearestDriver = { id: driverKey, ...driverData };
-        }
+    // 🛡️ EXCLUDE rejected drivers
+    if (excludedDriverIds.length > 0) {
+        query += ` AND id NOT IN (?)`;
+        queryParams.push(excludedDriverIds);
     }
 
-    if (!nearestDriver) return res.status(404).json({ message: "No drivers found nearby." });
+    query += ` HAVING distance < 50 ORDER BY distance ASC LIMIT 1`;
 
-    const otp = Math.floor(1000 + Math.random() * 9000);
-    
-    const sql = `INSERT INTO bookings (rider_id, driver_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`;
-    
-    pool.query(sql, [riderId, nearestDriver.id, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, otp], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        const bookingId = result.insertId;
-        const io = req.app.get('socketio');
-        
-        if (nearestDriver.socketId) {
-            // 🛠️ FIX: Send Drop Coordinates to Driver so Navigation works
-            io.to(nearestDriver.socketId).emit('newRideRequest', {
-                bookingId,
-                riderId,
-                pickupLat,
-                pickupLng,
-                dropLat,      // <--- Added
-                dropLng,      // <--- Added
-                pickupAddress,
-                dropAddress,
-                fare: fare,
-                dist: minDistance.toFixed(1)
-            });
+    pool.query(query, queryParams, (err, rows) => {
+        if (err) {
+            console.error("Find Driver Error:", err);
+            if (res) return res.status(500).json({ error: "Database error" });
+            return;
         }
 
-        res.json({ message: "Driver found", bookingId, driverId: nearestDriver.id, otp, fare });
+        if (rows.length === 0) {
+            // No drivers left!
+            if (res) return res.status(404).json({ message: "No drivers available" });
+            
+            // Notify Rider via Socket that search failed
+            // (We'd need to fetch riderId to do this properly, but for now we log it)
+            console.log(`⚠️ No more drivers available for Booking ${bookingId}`);
+            return;
+        }
+
+        const nextDriver = rows[0];
+        
+        // Update Booking with new Driver Candidate
+        pool.query(`UPDATE bookings SET driver_id = ? WHERE id = ?`, [nextDriver.id, bookingId], (err) => {
+            if (err) console.error("Update Booking Error:", err);
+
+            // Notify Driver
+            const driverSocketId = global.driverSockets ? global.driverSockets.get(nextDriver.id) : null;
+            if (driverSocketId && io) {
+                // Fetch extra booking details if needed (simplified here)
+                pool.query(`SELECT * FROM bookings WHERE id = ?`, [bookingId], (err, bRows) => {
+                    if(!bRows || bRows.length === 0) return;
+                    const booking = bRows[0];
+                    
+                    io.to(driverSocketId).emit('newRideRequest', {
+                        bookingId: booking.id,
+                        riderId: booking.rider_id,
+                        pickupLat: booking.pickup_lat,
+                        pickupLng: booking.pickup_lng,
+                        dropLat: booking.drop_lat,
+                        dropLng: booking.drop_lng,
+                        pickupAddress: booking.pickup_address,
+                        dropAddress: booking.drop_address,
+                        fare: booking.fare,
+                        dist: nextDriver.distance.toFixed(1)
+                    });
+                });
+            }
+
+            if (res) res.json({ message: "Request sent to next driver", driverId: nextDriver.id });
+        });
+    });
+};
+
+exports.requestRide = (req, res) => {
+    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare } = req.body;
+    
+    // 1. Create Booking FIRST (with empty rejected list)
+    const otp = Math.floor(1000 + Math.random() * 9000);
+    const sql = `INSERT INTO bookings (rider_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp, rejected_drivers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '[]')`;
+
+    pool.query(sql, [riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, otp], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        const bookingId = result.insertId;
+        const io = req.app.get('socketio');
+
+        // 2. Find First Driver
+        findAndNotifyDriver(bookingId, pickupLat, pickupLng, [], io, res);
+    });
+};
+
+// 🆕 NEW: Handle Rejection
+exports.handleRejection = (bookingId, driverId, io) => {
+    // 1. Get current list of rejected drivers
+    pool.query(`SELECT rejected_drivers, pickup_lat, pickup_lng FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
+        if (err || rows.length === 0) return;
+
+        const booking = rows[0];
+        let rejectedList = booking.rejected_drivers || [];
+        
+        // Add current driver to reject list
+        if (!rejectedList.includes(driverId)) {
+            rejectedList.push(driverId);
+        }
+
+        // 2. Save updated list to DB
+        pool.query(`UPDATE bookings SET rejected_drivers = ? WHERE id = ?`, [JSON.stringify(rejectedList), bookingId], (err) => {
+            if (err) return;
+
+            // 3. Find NEXT Driver
+            console.log(`🚫 Driver ${driverId} declined. Finding next...`);
+            findAndNotifyDriver(bookingId, booking.pickup_lat, booking.pickup_lng, rejectedList, io);
+        });
     });
 };
 
@@ -62,11 +136,11 @@ exports.acceptRide = (req, res) => {
     const { bookingId, driverId } = req.body;
     pool.query(`UPDATE bookings SET status = 'accepted', driver_id = ? WHERE id = ?`, [driverId, bookingId], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-
+        
+        // Fetch Driver Details to send to Rider
         const driverQuery = `SELECT u.name, u.email, u.phone, d.car_model, d.car_plate FROM drivers d JOIN users u ON d.user_id = u.id WHERE d.id = ?`;
-
         pool.query(driverQuery, [driverId], (err, rows) => {
-            const driverInfo = rows && rows[0] ? rows[0] : { name: "Driver", car_model: "Car", car_plate: "", phone: "" };
+            const driverInfo = rows && rows[0] ? rows[0] : {};
             const io = req.app.get('socketio');
             
             io.emit('rideAccepted', { 
@@ -131,10 +205,9 @@ exports.getHistory = (req, res) => {
     const role = req.user.role;
 
     if (role === 'driver') {
-        // 🛠️ FIX: Get Driver ID first, because 'bookings' uses driver_id, not user_id
         pool.query(`SELECT id FROM drivers WHERE user_id = ?`, [userId], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
-            if (rows.length === 0) return res.json([]); // No driver profile found
+            if (rows.length === 0) return res.json([]); 
 
             const driverId = rows[0].id;
             pool.query(`SELECT * FROM bookings WHERE driver_id = ? ORDER BY created_at DESC`, [driverId], (err, results) => {
@@ -143,25 +216,9 @@ exports.getHistory = (req, res) => {
             });
         });
     } else {
-        // Riders connect directly via user_id (rider_id)
         pool.query(`SELECT * FROM bookings WHERE rider_id = ? ORDER BY created_at DESC`, [userId], (err, results) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json(results);
         });
     }
-};
-
-// 🆕 NEW FUNCTION: Update Payment Status
-exports.confirmPayment = (req, res) => {
-    const { bookingId } = req.body;
-
-    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
-
-    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
-
-    pool.query(sql, [bookingId], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
-        
-        res.json({ message: "Payment successful", status: 'paid' });
-    });
 };

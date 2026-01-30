@@ -28,7 +28,7 @@ const MapScreen = ({ navigation }) => {
   const [destination, setDestination] = useState(null);
   const [pickupAddr, setPickupAddr] = useState("My Location");
   const [dropAddr, setDropAddr] = useState("");
-  const [isAddressLoading, setIsAddressLoading] = useState(false); // <--- ✅ NEW STATE
+  const [isAddressLoading, setIsAddressLoading] = useState(false);
 
   // UI & Flow
   const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0, duration: 0 });
@@ -153,7 +153,7 @@ const MapScreen = ({ navigation }) => {
           }
 
           // 2. Fetch Address (with Loading State)
-          setIsAddressLoading(true); // <--- START LOADING
+          setIsAddressLoading(true); 
           try {
               let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
               if(address[0]) {
@@ -167,7 +167,7 @@ const MapScreen = ({ navigation }) => {
           } catch(e) { 
               // Keep default text on failure
           } finally {
-              setIsAddressLoading(false); // <--- STOP LOADING
+              setIsAddressLoading(false); 
           }
       }
   };
@@ -260,6 +260,22 @@ const MapScreen = ({ navigation }) => {
       setRouteInfo({ distance: result.distance.toFixed(1), fare: price, duration: result.duration.toFixed(0) });
   };
 
+  // 🚀 REJECTION LOGIC
+  const rejectRide = () => {
+      if (!incomingRequest) return;
+      
+      const dId = userInfo.driverId || userInfo.id;
+      console.log("Declining Ride...");
+      
+      // Emit 'declineRide' so the server can find the next driver
+      socket.emit('declineRide', { 
+          bookingId: incomingRequest.bookingId, 
+          driverId: dId 
+      });
+
+      setIncomingRequest(null); // Hide modal locally
+  };
+
   if (loadingLocation || !location) return <View style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /></View>;
 
   return (
@@ -335,7 +351,7 @@ const MapScreen = ({ navigation }) => {
                 <TouchableOpacity 
                     style={[styles.confirmPinBtn, { opacity: isAddressLoading ? 0.6 : 1 }]} 
                     onPress={confirmPinSelection}
-                    disabled={isAddressLoading} // <--- Disable while fetching address
+                    disabled={isAddressLoading} 
                 >
                     {isAddressLoading ? (
                         <ActivityIndicator color="black" />
@@ -414,7 +430,13 @@ const MapScreen = ({ navigation }) => {
                 </View>
             )}
 
-            <DriverRequestModal visible={!!incomingRequest} request={incomingRequest} onAccept={acceptRide} onReject={() => setIncomingRequest(null)} />
+            {/* 🚀 UPGRADE: Pass rejectRide to onReject */}
+            <DriverRequestModal 
+                visible={!!incomingRequest} 
+                request={incomingRequest} 
+                onAccept={acceptRide} 
+                onReject={rejectRide} 
+            />
             <OTPModal visible={showOtpModal} onSubmit={startRide} onCancel={() => setShowOtpModal(false)} />
         </>
       )}
