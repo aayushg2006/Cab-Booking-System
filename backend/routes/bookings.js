@@ -18,4 +18,5 @@ router.post('/start', authMiddleware, bookingController.startRide);
 router.post('/end', authMiddleware, bookingController.endRide);
 router.get('/history', authMiddleware, bookingController.getHistory);
 
+router.post('/pay', authMiddleware, bookingController.confirmPayment);
 module.exports = router;

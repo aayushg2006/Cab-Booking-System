@@ -150,3 +150,18 @@ exports.getHistory = (req, res) => {
         });
     }
 };
+
+// 🆕 NEW FUNCTION: Update Payment Status
+exports.confirmPayment = (req, res) => {
+    const { bookingId } = req.body;
+
+    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
+
+    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
+
+    pool.query(sql, [bookingId], (err, result) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        res.json({ message: "Payment successful", status: 'paid' });
+    });
+};

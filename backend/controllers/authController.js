@@ -1,10 +1,10 @@
-// backend/controllers/authController.js
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
+// 🛠️ FIX 1: Add 'role' to the token payload
+const generateToken = (id, role) => {
+    return jwt.sign({ id, role }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
 };
 
 // @desc    Register new user
@@ -38,13 +38,13 @@ exports.register = async (req, res) => {
         const userId = userResult.insertId;
         let newDriverId = null;
 
-        // 4. If Driver, Insert into DRIVERS table AND CAPTURE ID
+        // 4. If Driver, Insert into DRIVERS table
         if (role === 'driver') {
             const [driverResult] = await pool.promise().query(
                 `INSERT INTO drivers (user_id, car_model, car_plate, license_number, status) VALUES (?, ?, ?, ?, 'offline')`,
                 [userId, car_model || 'Unknown', car_plate || 'Unknown', license_number || 'Unknown'] 
             );
-            newDriverId = driverResult.insertId; // <--- ✅ VITAL FIX
+            newDriverId = driverResult.insertId;
         }
 
         res.status(201).json({
@@ -54,9 +54,10 @@ exports.register = async (req, res) => {
                 name, 
                 email, 
                 role: role || 'rider',
-                driverId: newDriverId // <--- ✅ SEND TO FRONTEND
+                driverId: newDriverId 
             },
-            token: generateToken(userId)
+            // 🛠️ FIX 2: Pass role to generator
+            token: generateToken(userId, role || 'rider') 
         });
 
     } catch (err) {
@@ -99,7 +100,8 @@ exports.login = async (req, res) => {
                 role: user.role,
                 driverId: driverInfo ? driverInfo.id : null 
             },
-            token: generateToken(user.id)
+            // 🛠️ FIX 3: Pass role to generator
+            token: generateToken(user.id, user.role) 
         });
 
     } catch (err) {

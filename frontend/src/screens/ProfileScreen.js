@@ -30,7 +30,7 @@ const ProfileScreen = ({ navigation }) => {
     <View style={styles.rideCard}>
       <View style={styles.row}>
         <Text style={styles.date}>{new Date(item.created_at).toLocaleDateString()}</Text>
-        <Text style={styles.fare}>${item.fare}</Text>
+        <Text style={styles.fare}>₹{item.fare}</Text>
       </View>
       <Text style={styles.address} numberOfLines={1}>📍 {item.drop_address || 'Destination'}</Text>
       <Text style={[styles.status, { color: item.status === 'completed' ? colors.success : 'orange' }]}>

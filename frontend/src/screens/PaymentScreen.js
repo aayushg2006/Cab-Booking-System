@@ -1,21 +1,41 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react'; // 1. Import useContext
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
 import { colors } from '../theme/colors';
 import { Ionicons } from '@expo/vector-icons';
+import { AuthContext } from '../context/AuthContext'; // 2. Import AuthContext
+import client from '../api/client'; // 3. Import Client
 
 const PaymentScreen = ({ route, navigation }) => {
-  const { fare } = route.params || { fare: '0.00' };
+  // 4. Get bookingId and fare from navigation params
+  const { fare, bookingId } = route.params || { fare: '0.00', bookingId: null };
+  
+  const { userToken } = useContext(AuthContext); // 5. Get Token
   const [loading, setLoading] = useState(false);
 
   const handlePay = async () => {
+    if (!bookingId) {
+        Alert.alert("Error", "Invalid Booking ID");
+        return;
+    }
+
     setLoading(true);
-    // Simulate Payment Delay
-    setTimeout(() => {
-        setLoading(false);
+    try {
+        // 6. Call the API
+        await client.post('/bookings/pay', 
+            { bookingId }, 
+            { headers: { Authorization: `Bearer ${userToken}` } }
+        );
+
         Alert.alert("Success", "Payment Successful!", [
             { text: "OK", onPress: () => navigation.navigate('Map') }
         ]);
-    }, 2000);
+
+    } catch (err) {
+        console.log("Payment Error:", err);
+        Alert.alert("Error", "Payment failed. Please try again.");
+    } finally {
+        setLoading(false);
+    }
   };
 
   return (
@@ -28,7 +48,7 @@ const PaymentScreen = ({ route, navigation }) => {
         <Text style={styles.cardText}>💳  •••• •••• •••• 4242</Text>
       </View>
 
-      <TouchableOpacity style={styles.payBtn} onPress={handlePay}>
+      <TouchableOpacity style={styles.payBtn} onPress={handlePay} disabled={loading}>
         {loading ? (
             <ActivityIndicator color="black" />
         ) : (
