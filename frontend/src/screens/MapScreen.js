@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useContext, useRef } from 'react';
-import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator, Image, Keyboard, Linking, Platform } from 'react-native';
+import { View, StyleSheet, Text, TouchableOpacity, Alert, ActivityIndicator, Image, Keyboard, Linking, Platform, AppState } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import MapViewDirections from 'react-native-maps-directions'; 
 import * as Location from 'expo-location';
@@ -21,63 +21,109 @@ const MapScreen = ({ navigation }) => {
   const { userInfo, userToken } = useContext(AuthContext);
   const { socket } = useContext(SocketContext);
   const mapRef = useRef(null);
+  const appState = useRef(AppState.currentState);
 
+  // Locations & Addresses
   const [location, setLocation] = useState(null); 
   const [destination, setDestination] = useState(null);
-  const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0 }); // Base Fare
+  const [pickupAddr, setPickupAddr] = useState("My Location");
+  const [dropAddr, setDropAddr] = useState("");
+
+  // UI & Flow
+  const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0, duration: 0 });
   const [status, setStatus] = useState('IDLE'); 
+  const [isPinning, setIsPinning] = useState(false); 
+  const [pinType, setPinType] = useState('pickup'); // 'pickup' or 'drop'
+
+  // Booking & Driver
   const [activeBooking, setActiveBooking] = useState(null);
   const [isDriverOnline, setIsDriverOnline] = useState(false);
   const [incomingRequest, setIncomingRequest] = useState(null);
   const [showOtpModal, setShowOtpModal] = useState(false);
-  const [driverLocation, setDriverLocation] = useState(null);
+  const [driverLocation, setDriverLocation] = useState(null); // For Rider
   const [loadingLocation, setLoadingLocation] = useState(true);
 
-  // 1. 📍 Get My Location
+  // 🛠️ 1. Continuous Location Tracking (Fixes Disconnect/Tracking issues)
   useEffect(() => {
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setLoadingLocation(false);
-          return;
-        }
-        
-        let loc = await Location.getCurrentPositionAsync({});
-        const currentLoc = { 
-            latitude: loc.coords.latitude, 
-            longitude: loc.coords.longitude, 
-            latitudeDelta: 0.015, 
-            longitudeDelta: 0.0121 
-        };
-        setLocation(currentLoc);
+    let subscription = null;
+
+    const startTracking = async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
         setLoadingLocation(false);
-
-        if (userInfo.role === 'driver' && isDriverOnline && socket && socket.connected) {
-            const dId = userInfo.driverId || userInfo.id;
-            socket.emit('driverLocation', { driverId: dId, lat: loc.coords.latitude, lng: loc.coords.longitude });
-        }
-      } catch (err) {
-          setLoadingLocation(false);
+        return;
       }
-    })();
-  }, [isDriverOnline, userInfo, socket]);
 
-  // 2. ⚡ Socket Listeners
+      // Initial Fix
+      let loc = await Location.getCurrentPositionAsync({});
+      setLocation({ 
+          latitude: loc.coords.latitude, 
+          longitude: loc.coords.longitude, 
+          latitudeDelta: 0.005, 
+          longitudeDelta: 0.005 
+      });
+      setLoadingLocation(false);
+
+      // 📡 Continuous Updates (Every 5 seconds or 10 meters)
+      subscription = await Location.watchPositionAsync(
+        { 
+            accuracy: Location.Accuracy.High, 
+            timeInterval: 5000, 
+            distanceInterval: 10 
+        }, 
+        (newLoc) => {
+            const { latitude, longitude } = newLoc.coords;
+            
+            // Update my view
+            // setLocation({ latitude, longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 });
+
+            // If Driver & Online -> Send to Server
+            if (userInfo.role === 'driver' && isDriverOnline && socket?.connected) {
+                const dId = userInfo.driverId || userInfo.id;
+                console.log("📍 Driver Update:", latitude, longitude);
+                socket.emit('driverLocation', { driverId: dId, lat: latitude, lng: longitude });
+            }
+        }
+      );
+    };
+
+    startTracking();
+
+    // Cleanup
+    return () => {
+        if (subscription) subscription.remove();
+    };
+  }, [isDriverOnline, userInfo, socket]); // Re-run if online status changes
+
+  // 🛠️ 2. App State Listener (Reconnect when coming back from Maps)
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
+        console.log('⚡ App has come to the foreground!');
+        if (userInfo.role === 'driver' && isDriverOnline && socket) {
+            socket.connect(); // Force reconnect
+        }
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => subscription.remove();
+  }, [isDriverOnline, socket]);
+
+  // 3. Socket Listeners
   useEffect(() => {
     if (!socket) return;
 
     socket.on('rideAccepted', (data) => {
         setStatus('ACCEPTED');
         setActiveBooking(prev => ({ ...prev, ...data })); 
-        if (userInfo.role === 'rider') {
-             Alert.alert("Ride Accepted", `${data.driverName || 'Driver'} is on the way!`);
-        }
+        if (userInfo.role === 'rider') Alert.alert("Ride Accepted", `${data.driverName} is on the way!`);
     });
 
     socket.on('driverMoved', (data) => {
-        if (activeBooking && activeBooking.driverId == data.driverId) {
-            setDriverLocation({ latitude: data.lat, longitude: data.lng });
+        // Rider View: Update Driver Car Icon
+        if (userInfo.role === 'rider' && (status === 'ACCEPTED' || status === 'ONGOING')) {
+             setDriverLocation({ latitude: data.lat, longitude: data.lng });
         }
     });
 
@@ -91,44 +137,58 @@ const MapScreen = ({ navigation }) => {
 
     socket.on('rideCompleted', ({ fare }) => {
         setStatus('COMPLETED');
-        
-        // 🚀 CRITICAL FIX: Only redirect Rider to payment
         if (userInfo.role === 'rider') {
             Alert.alert('Ride Completed', `Total Fare: ₹${fare}`);
             navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId });
         } else {
-            // Driver View
             Alert.alert('Ride Ended', `Collect ₹${fare} from the rider.`);
-            setStatus('IDLE'); // Reset Driver
+            setStatus('IDLE'); 
         }
-        
-        // Common Reset
         setDestination(null);
         setActiveBooking(null);
         setDriverLocation(null);
     });
 
-    socket.on('newRideRequest', (data) => {
-        setIncomingRequest(data);
-    });
+    socket.on('newRideRequest', (data) => setIncomingRequest(data));
 
     return () => socket.removeAllListeners();
-  }, [socket, activeBooking]);
+  }, [socket, activeBooking, status]);
 
-  // --- UTILS ---
-  const openExternalMap = (lat, lng, label = 'Destination') => {
-    const scheme = Platform.select({ ios: 'maps:0,0?q=', android: 'geo:0,0?q=' });
-    const latLng = `${lat},${lng}`;
-    const url = Platform.select({
-      ios: `${scheme}${label}@${latLng}`,
-      android: `${scheme}${latLng}(${label})`
-    });
-    Linking.openURL(url);
+  // --- MAP PIN LOGIC (With Reverse Geocode) ---
+  const handleRegionChangeComplete = async (region) => {
+      if (isPinning) {
+          if (pinType === 'pickup') {
+              setLocation({ ...region, latitudeDelta: 0.005, longitudeDelta: 0.005 });
+              // Reverse Geocode Pickup
+              try {
+                  let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
+                  if(address[0]) setPickupAddr(`${address[0].name}, ${address[0].city}`);
+              } catch(e) { setPickupAddr("Pinned Location"); }
+
+          } else {
+              setDestination({ latitude: region.latitude, longitude: region.longitude });
+              // Reverse Geocode Drop
+              try {
+                  let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
+                  if(address[0]) setDropAddr(`${address[0].name}, ${address[0].city}`);
+              } catch(e) { setDropAddr("Pinned Destination"); }
+          }
+      }
+  };
+
+  const confirmPinSelection = () => {
+      setIsPinning(false);
+      if (pinType === 'drop') setStatus('SELECTING');
   };
 
   // --- ACTIONS ---
 
   const requestRide = async (carType, calculatedFare) => {
+    // 🛡️ Safety: Don't send 0,0
+    if (!destination || !destination.latitude || !destination.longitude) {
+        return Alert.alert("Error", "Please select a valid destination.");
+    }
+
     setStatus('SEARCHING');
     try {
         const res = await client.post('/bookings/request', {
@@ -137,10 +197,10 @@ const MapScreen = ({ navigation }) => {
             pickupLng: location.longitude,
             dropLat: destination.latitude,
             dropLng: destination.longitude,
-            pickupAddress: "My Location",
-            dropAddress: "Destination",
-            fare: calculatedFare, // Calculated based on category
-            carType: carType // 'hatchback', 'sedan', etc.
+            pickupAddress: pickupAddr, 
+            dropAddress: dropAddr,     
+            fare: calculatedFare,
+            carType: carType
         }, { headers: { Authorization: `Bearer ${userToken}` }});
         
         setActiveBooking({ bookingId: res.data.bookingId, otp: res.data.otp }); 
@@ -154,63 +214,57 @@ const MapScreen = ({ navigation }) => {
     if (!incomingRequest) return;
     try {
         const dId = userInfo.driverId || userInfo.id;
-        await client.post('/bookings/accept', { 
-            bookingId: incomingRequest.bookingId, 
-            driverId: dId 
-        }, { headers: { Authorization: `Bearer ${userToken}` }});
+        await client.post('/bookings/accept', { bookingId: incomingRequest.bookingId, driverId: dId }, 
+        { headers: { Authorization: `Bearer ${userToken}` }});
         
         setStatus('ACCEPTED');
         setActiveBooking(incomingRequest);
         setIncomingRequest(null);
         
-        // Auto-open Maps for pickup
         Alert.alert("Navigate", "Open Maps to Pickup?", [
             { text: "No" },
-            { text: "Yes", onPress: () => openExternalMap(incomingRequest.pickupLat, incomingRequest.pickupLng, 'Pickup') }
+            { text: "Yes", onPress: () => openExternalMap(incomingRequest.pickupLat, incomingRequest.pickupLng) }
         ]);
-
-    } catch (err) {
-        Alert.alert('Error', 'Could not accept ride.');
-    }
+    } catch (err) { Alert.alert('Error', 'Could not accept ride.'); }
   };
 
   const startRide = async (otpInput) => {
       if (!activeBooking) return;
       try {
         setShowOtpModal(false); 
-        await client.post('/bookings/start', { 
-            bookingId: activeBooking.bookingId, 
-            otp: otpInput 
-        }, { headers: { Authorization: `Bearer ${userToken}` }});
-      } catch(e) { 
-          setShowOtpModal(true); 
-          Alert.alert("Invalid OTP");
-      }
+        await client.post('/bookings/start', { bookingId: activeBooking.bookingId, otp: otpInput }, 
+        { headers: { Authorization: `Bearer ${userToken}` }});
+      } catch(e) { setShowOtpModal(true); Alert.alert("Invalid OTP"); }
   };
 
   const endRide = async () => {
       if (!activeBooking) return;
       try {
-          // Send current location to calculate REAL distance
           let endLoc = location; 
-          try {
-             let loc = await Location.getCurrentPositionAsync({});
-             endLoc = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-          } catch(e) {}
+          // Get Final GPS Fix
+          let loc = await Location.getCurrentPositionAsync({});
+          endLoc = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
 
           await client.post('/bookings/end', { 
               bookingId: activeBooking.bookingId,
               dropLat: endLoc.latitude,
               dropLng: endLoc.longitude
           }, { headers: { Authorization: `Bearer ${userToken}` }});
-      } catch (e) {
-          Alert.alert("Error", "Could not end ride.");
-      }
+      } catch (e) { Alert.alert("Error", "Could not end ride."); }
+  };
+
+  // Map Utils
+  const openExternalMap = (lat, lng) => {
+    const url = Platform.select({
+      ios: `maps:0,0?q=${lat},${lng}`,
+      android: `geo:0,0?q=${lat},${lng}`
+    });
+    Linking.openURL(url);
   };
 
   const onDirectionsReady = (result) => {
       const price = Math.round(50 + (result.distance * 15)); 
-      setRouteInfo({ distance: result.distance.toFixed(1), fare: price });
+      setRouteInfo({ distance: result.distance.toFixed(1), fare: price, duration: result.duration.toFixed(0) });
   };
 
   if (loadingLocation || !location) return <View style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /></View>;
@@ -226,26 +280,42 @@ const MapScreen = ({ navigation }) => {
         style={styles.map}
         provider={PROVIDER_GOOGLE}
         initialRegion={location}
-        showsUserLocation={true}
+        showsUserLocation={!isPinning}
         customMapStyle={darkMapStyle}
+        onRegionChangeComplete={handleRegionChangeComplete}
       >
-        {destination && <Marker coordinate={destination} pinColor={colors.primary} />}
-        {driverLocation && <Marker coordinate={driverLocation} title="Your Driver"><View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View></Marker>}
-        {destination && GOOGLE_API_KEY && (
+        {!isPinning && destination && <Marker coordinate={destination} pinColor={colors.primary} />}
+        
+        {/* 🚗 Driver Marker (Visible to Rider) */}
+        {!isPinning && driverLocation && (
+            <Marker coordinate={driverLocation} title="Your Driver">
+                <View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View>
+            </Marker>
+        )}
+        
+        {!isPinning && destination && GOOGLE_API_KEY && (
             <MapViewDirections origin={location} destination={destination} apikey={GOOGLE_API_KEY} strokeWidth={4} strokeColor={colors.primary} onReady={onDirectionsReady} />
         )}
       </MapView>
 
-      {/* RIDER UI */}
+      {/* 📍 PIN UI */}
+      {isPinning && (
+          <View style={styles.centerPinContainer} pointerEvents="none">
+              <Ionicons name="location" size={40} color={colors.primary} />
+          </View>
+      )}
+
+      {/* --- RIDER UI --- */}
       {userInfo.role === 'rider' && (
         <>
-            {status === 'IDLE' && (
+            {status === 'IDLE' && !isPinning && (
                 <View style={styles.searchContainer}>
                     <GooglePlacesAutocomplete
                         placeholder="Where to?"
                         onPress={(data, details = null) => {
                             if (!details) return;
                             setDestination({ latitude: details.geometry.location.lat, longitude: details.geometry.location.lng });
+                            setDropAddr(data.description); 
                             setStatus('SELECTING');
                             Keyboard.dismiss();
                         }}
@@ -253,21 +323,32 @@ const MapScreen = ({ navigation }) => {
                         fetchDetails={true}
                         styles={{ 
                             textInput: styles.searchInput, 
-                            container: { flex: 0 },
                             listView: { backgroundColor: '#1a1a1a', zIndex: 1000 },
-                            row: { backgroundColor: '#1a1a1a' },
-                            description: { color: 'white' },
-                            predefinedPlacesDescription: { color: '#1faadb' },
+                            description: { color: 'white' }
                         }}
                         enablePoweredByContainer={false}
                     />
+                    
+                    <View style={{flexDirection: 'row', justifyContent: 'space-between', marginTop: 10}}>
+                        <TouchableOpacity style={styles.pinBtn} onPress={() => { setIsPinning(true); setPinType('drop'); }}>
+                            <Ionicons name="map" size={20} color="white" />
+                            <Text style={styles.pinText}> Set on Map</Text>
+                        </TouchableOpacity>
+                    </View>
                 </View>
+            )}
+
+            {isPinning && (
+                <TouchableOpacity style={styles.confirmPinBtn} onPress={confirmPinSelection}>
+                    <Text style={styles.confirmPinText}>CONFIRM {pinType.toUpperCase()}</Text>
+                </TouchableOpacity>
             )}
 
             {(status === 'SELECTING' || status === 'SEARCHING') && (
                 <RideRequestPanel 
                     fare={routeInfo.fare}
                     distance={routeInfo.distance}
+                    duration={routeInfo.duration}
                     isSearching={status === 'SEARCHING'}
                     onCancel={() => { setStatus('IDLE'); setDestination(null); }}
                     onRequest={requestRide}
@@ -276,13 +357,12 @@ const MapScreen = ({ navigation }) => {
             
             {(status === 'ACCEPTED' || status === 'ONGOING') && activeBooking && (
                 <View style={styles.driverInfoCard}>
-                     {/* Driver details UI (Same as before) */}
                      <View style={styles.driverHeader}>
                         <View style={styles.avatar}><Text style={{fontSize:20}}>🚘</Text></View>
                         <View style={{marginLeft: 15}}>
                             <Text style={styles.driverName}>{activeBooking.driverName || 'Driver'}</Text>
                             <Text style={styles.carInfo}>{activeBooking.carModel}</Text>
-                            <Text style={styles.rating}>⭐ {activeBooking.rating || '5.0'}</Text>
+                            <Text style={styles.rating}>⭐ 5.0</Text>
                         </View>
                      </View>
                      <View style={styles.divider} />
@@ -290,13 +370,15 @@ const MapScreen = ({ navigation }) => {
                         <Text style={styles.otpLabel}>OTP PIN</Text>
                         <Text style={styles.otpCode}>{activeBooking.otp}</Text>
                      </View>
-                     <Text style={styles.statusText}>{status === 'ACCEPTED' ? 'Driver is arriving...' : 'Ride in Progress'}</Text>
+                     <Text style={styles.statusText}>
+                        {status === 'ACCEPTED' ? `Driver arriving in ~${routeInfo.duration} min` : 'Ride in Progress'}
+                     </Text>
                 </View>
             )}
         </>
       )}
 
-      {/* DRIVER UI */}
+      {/* --- DRIVER UI --- */}
       {userInfo.role === 'driver' && (
         <>
             {status === 'IDLE' && (
@@ -309,10 +391,9 @@ const MapScreen = ({ navigation }) => {
             
             {status === 'ACCEPTED' && (
                 <View style={styles.driverControls}>
-                    {/* Navigation Button */}
-                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.pickupLat, activeBooking.pickupLng, 'Pickup')}>
+                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.pickupLat, activeBooking.pickupLng)}>
                         <Ionicons name="navigate" size={24} color="white" />
-                        <Text style={styles.navText}>Navigate</Text>
+                        <Text style={styles.navText}>Pickup Nav</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={styles.actionBtn} onPress={() => setShowOtpModal(true)}>
                         <Text style={styles.actionText}>START RIDE</Text>
@@ -322,10 +403,9 @@ const MapScreen = ({ navigation }) => {
 
             {status === 'ONGOING' && (
                 <View style={styles.driverControls}>
-                    {/* Navigation Button */}
-                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.dropLat || 0, activeBooking.dropLng || 0, 'Drop')}>
+                    <TouchableOpacity style={styles.navBtn} onPress={() => openExternalMap(activeBooking.dropLat, activeBooking.dropLng)}>
                         <Ionicons name="navigate" size={24} color="white" />
-                        <Text style={styles.navText}>Navigate</Text>
+                        <Text style={styles.navText}>Drop Nav</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={[styles.actionBtn, {backgroundColor: colors.error}]} onPress={endRide}>
                         <Text style={styles.actionText}>END RIDE</Text>
@@ -341,6 +421,7 @@ const MapScreen = ({ navigation }) => {
   );
 };
 
+// ... Styles (Keep existing styles) ...
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
   map: { flex: 1 },
@@ -348,6 +429,14 @@ const styles = StyleSheet.create({
   menuBtn: { position: 'absolute', top: 50, left: 20, zIndex: 20, backgroundColor: 'white', padding: 10, borderRadius: 25, elevation: 5 },
   searchContainer: { position: 'absolute', top: 100, width: '90%', alignSelf: 'center', zIndex: 10 },
   searchInput: { backgroundColor: '#333', color: 'white', borderRadius: 10, paddingHorizontal: 10 },
+  
+  pinBtn: { backgroundColor: '#444', padding: 10, borderRadius: 8, flexDirection: 'row', alignItems: 'center', flex:1, marginHorizontal:5, justifyContent:'center' },
+  pinText: { color: 'white', fontSize: 12, fontWeight: 'bold' },
+  
+  centerPinContainer: { position: 'absolute', top: '50%', left: '50%', marginTop: -35, marginLeft: -20, zIndex: 20 },
+  confirmPinBtn: { position: 'absolute', bottom: 50, width: '80%', alignSelf: 'center', backgroundColor: colors.primary, padding: 15, borderRadius: 10, alignItems: 'center', zIndex:20 },
+  confirmPinText: { color: 'black', fontWeight: 'bold', fontSize: 16 },
+
   driverInfoCard: { position: 'absolute', bottom: 30, width: '90%', alignSelf: 'center', backgroundColor: '#1a1a1a', padding: 20, borderRadius: 15, borderWidth: 1, borderColor: '#333', shadowColor:'#000', elevation:10 },
   driverHeader: { flexDirection: 'row', alignItems: 'center' },
   avatar: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center' },
@@ -359,6 +448,7 @@ const styles = StyleSheet.create({
   otpLabel: { color: '#888', fontWeight: 'bold' },
   otpCode: { color: colors.primary, fontSize: 24, fontWeight: 'bold', letterSpacing: 5 },
   statusText: { color: colors.success, textAlign: 'center', marginTop: 15, fontStyle: 'italic' },
+  
   driverControls: { position: 'absolute', bottom: 50, alignSelf: 'center', width: '100%', alignItems:'center' },
   onlineBtn: { width: 200, padding: 15, borderRadius: 30, alignItems: 'center', shadowColor:'black', elevation:5 },
   onlineText: { color: 'black', fontWeight: 'bold', fontSize: 16 },

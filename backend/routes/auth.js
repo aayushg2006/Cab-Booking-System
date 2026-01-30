@@ -1,8 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const { registerUser, loginUser } = require('../controllers/authController');
+const { register, login } = require('../controllers/authController');
 
-router.post('/register', registerUser);
-router.post('/login', loginUser);
+// Debugging check (prints to terminal if imports fail)
+if (!register || !login) {
+    console.error("❌ Auth Controller Import Failed! Check exports in authController.js");
+}
+
+router.post('/register', register);
+router.post('/login', login);
 
 module.exports = router;

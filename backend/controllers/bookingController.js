@@ -9,7 +9,6 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 }
 
 exports.requestRide = async (req, res) => {
-    // 🛠 Receive carType and fare
     const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, carType } = req.body;
 
     if (!riderId || !pickupLat || !pickupLng) return res.status(400).json({ error: "Missing required fields" });
@@ -19,14 +18,8 @@ exports.requestRide = async (req, res) => {
     let minDistance = Infinity;
     const MAX_RADIUS_KM = 5000; 
 
-    // 🕵️ FILTER BY CAR CATEGORY (Assuming we stored carType in driverData when they went online)
-    // NOTE: For MVP, we allow any driver if carType logic isn't fully in DB yet, but ideally:
-    // if (driverData.carType !== carType) continue;
-
     for (let [driverKey, driverData] of global.activeDrivers.entries()) {
         const dist = calculateDistance(pickupLat, pickupLng, driverData.lat, driverData.lng);
-        
-        // Simple optimization: Pick nearest
         if (dist <= MAX_RADIUS_KM && dist < minDistance) {
             minDistance = dist;
             nearestDriver = { id: driverKey, ...driverData };
@@ -46,14 +39,17 @@ exports.requestRide = async (req, res) => {
         const io = req.app.get('socketio');
         
         if (nearestDriver.socketId) {
+            // 🛠️ FIX: Send Drop Coordinates to Driver so Navigation works
             io.to(nearestDriver.socketId).emit('newRideRequest', {
                 bookingId,
                 riderId,
                 pickupLat,
                 pickupLng,
+                dropLat,      // <--- Added
+                dropLng,      // <--- Added
                 pickupAddress,
                 dropAddress,
-                fare: fare, // Send agreed fare
+                fare: fare,
                 dist: minDistance.toFixed(1)
             });
         }
@@ -67,7 +63,6 @@ exports.acceptRide = (req, res) => {
     pool.query(`UPDATE bookings SET status = 'accepted', driver_id = ? WHERE id = ?`, [driverId, bookingId], (err) => {
         if (err) return res.status(500).json({ error: err.message });
 
-        // Safe Driver Query
         const driverQuery = `SELECT u.name, u.email, u.phone, d.car_model, d.car_plate FROM drivers d JOIN users u ON d.user_id = u.id WHERE d.id = ?`;
 
         pool.query(driverQuery, [driverId], (err, rows) => {
@@ -96,13 +91,10 @@ exports.startRide = (req, res) => {
         
         pool.query(`UPDATE bookings SET status = 'ongoing', start_time = NOW() WHERE id = ?`, [bookingId], (err) => {
             if (err) return res.status(500).json({ error: err.message });
-            
-            // Try/Catch for Socket to prevent crash
             try {
                 const io = req.app.get('socketio');
                 if(io) io.emit('rideStarted', { bookingId });
-            } catch(e) { console.error("Socket emit failed", e); }
-            
+            } catch(e) { console.error("Socket error", e); }
             res.json({ message: "Ride Started" });
         });
     });
@@ -111,20 +103,17 @@ exports.startRide = (req, res) => {
 exports.endRide = (req, res) => {
     const { bookingId, dropLat, dropLng } = req.body;
 
-    // 1. Get Pickup Coordinates to Calc Actual Distance
     pool.query(`SELECT pickup_lat, pickup_lng, fare FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
         if (err || rows.length === 0) return res.status(500).json({error: "Booking not found"});
         
         const booking = rows[0];
         let finalFare = booking.fare;
 
-        // 💰 RECALCULATE FARE if new coords provided
         if (dropLat && dropLng) {
             const actualDist = calculateDistance(booking.pickup_lat, booking.pickup_lng, dropLat, dropLng);
-            finalFare = Math.round(50 + (actualDist * 15)); // Base 50 + 15/km
+            finalFare = Math.round(50 + (actualDist * 15)); 
         }
 
-        // 2. Update DB
         pool.query(`UPDATE bookings SET status = 'completed', end_time = NOW(), fare = ? WHERE id = ?`, [finalFare, bookingId], (err) => {
             if (err) return res.status(500).json({ error: err.message });
             
@@ -140,9 +129,24 @@ exports.endRide = (req, res) => {
 exports.getHistory = (req, res) => {
     const userId = req.user.id; 
     const role = req.user.role;
-    let sql = role === 'driver' ? `SELECT * FROM bookings WHERE driver_id = ?` : `SELECT * FROM bookings WHERE rider_id = ?`;
-    pool.query(sql + ` ORDER BY created_at DESC`, [userId], (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(results);
-    });
+
+    if (role === 'driver') {
+        // 🛠️ FIX: Get Driver ID first, because 'bookings' uses driver_id, not user_id
+        pool.query(`SELECT id FROM drivers WHERE user_id = ?`, [userId], (err, rows) => {
+            if (err) return res.status(500).json({ error: err.message });
+            if (rows.length === 0) return res.json([]); // No driver profile found
+
+            const driverId = rows[0].id;
+            pool.query(`SELECT * FROM bookings WHERE driver_id = ? ORDER BY created_at DESC`, [driverId], (err, results) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json(results);
+            });
+        });
+    } else {
+        // Riders connect directly via user_id (rider_id)
+        pool.query(`SELECT * FROM bookings WHERE rider_id = ? ORDER BY created_at DESC`, [userId], (err, results) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(results);
+        });
+    }
 };

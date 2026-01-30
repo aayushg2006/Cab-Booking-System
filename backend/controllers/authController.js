@@ -3,12 +3,11 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    return jwt.sign({ id }, process.env.JWT_SECRET || 'secret', { expiresIn: '30d' });
 };
 
-// @desc    Register new user (Rider or Driver)
-// @route   POST /api/auth/register
-exports.registerUser = async (req, res) => {
+// @desc    Register new user
+exports.register = async (req, res) => {
     const { name, email, phone, password, role, car_model, car_plate, license_number } = req.body;
 
     if (!name || !email || !password || !phone) {
@@ -39,13 +38,9 @@ exports.registerUser = async (req, res) => {
 
         // 4. If Driver, Insert into DRIVERS table
         if (role === 'driver') {
-            if (!car_model || !car_plate || !license_number) {
-                return res.status(400).json({ error: 'Drivers must provide car details and license number' });
-            }
-
             await pool.promise().query(
-                `INSERT INTO drivers (user_id, car_model, car_plate, license_number, is_online) VALUES (?, ?, ?, ?, ?)`,
-                [userId, car_model, car_plate, license_number, false] 
+                `INSERT INTO drivers (user_id, car_model, car_plate, license_number, status) VALUES (?, ?, ?, ?, 'offline')`,
+                [userId, car_model || 'Unknown', car_plate || 'Unknown', license_number || 'Unknown'] 
             );
         }
 
@@ -62,8 +57,7 @@ exports.registerUser = async (req, res) => {
 };
 
 // @desc    Login user
-// @route   POST /api/auth/login
-exports.loginUser = async (req, res) => {
+exports.login = async (req, res) => {
     const { email, password } = req.body;
 
     try {
