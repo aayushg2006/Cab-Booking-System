@@ -49,11 +49,9 @@ io.on('connection', (socket) => {
             lng: parseFloat(data.lng)
         });
         
-        // 🚀 NEW: Broadcast this movement! 
-        // In a real app, send only to the specific rider. 
-        // For MVP, we broadcast, and the Frontend filters it.
+        // 🚀 FIX: Include driverId in broadcast
         io.emit('driverMoved', {
-            driverId: data.driverId,
+            driverId: data.driverId, // <--- ✅ ADDED
             lat: parseFloat(data.lat),
             lng: parseFloat(data.lng)
         });

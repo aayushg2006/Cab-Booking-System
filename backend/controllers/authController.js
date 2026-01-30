@@ -1,3 +1,4 @@
+// backend/controllers/authController.js
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -35,18 +36,26 @@ exports.register = async (req, res) => {
         );
         
         const userId = userResult.insertId;
+        let newDriverId = null;
 
-        // 4. If Driver, Insert into DRIVERS table
+        // 4. If Driver, Insert into DRIVERS table AND CAPTURE ID
         if (role === 'driver') {
-            await pool.promise().query(
+            const [driverResult] = await pool.promise().query(
                 `INSERT INTO drivers (user_id, car_model, car_plate, license_number, status) VALUES (?, ?, ?, ?, 'offline')`,
                 [userId, car_model || 'Unknown', car_plate || 'Unknown', license_number || 'Unknown'] 
             );
+            newDriverId = driverResult.insertId; // <--- ✅ VITAL FIX
         }
 
         res.status(201).json({
             message: 'Registration successful',
-            user: { id: userId, name, email, role: role || 'rider' },
+            user: { 
+                id: userId, 
+                name, 
+                email, 
+                role: role || 'rider',
+                driverId: newDriverId // <--- ✅ SEND TO FRONTEND
+            },
             token: generateToken(userId)
         });
 

@@ -28,6 +28,7 @@ const MapScreen = ({ navigation }) => {
   const [destination, setDestination] = useState(null);
   const [pickupAddr, setPickupAddr] = useState("My Location");
   const [dropAddr, setDropAddr] = useState("");
+  const [isAddressLoading, setIsAddressLoading] = useState(false); // <--- ✅ NEW STATE
 
   // UI & Flow
   const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0, duration: 0 });
@@ -40,10 +41,10 @@ const MapScreen = ({ navigation }) => {
   const [isDriverOnline, setIsDriverOnline] = useState(false);
   const [incomingRequest, setIncomingRequest] = useState(null);
   const [showOtpModal, setShowOtpModal] = useState(false);
-  const [driverLocation, setDriverLocation] = useState(null); // For Rider
+  const [driverLocation, setDriverLocation] = useState(null); 
   const [loadingLocation, setLoadingLocation] = useState(true);
 
-  // 🛠️ 1. Continuous Location Tracking (Fixes Disconnect/Tracking issues)
+  // 🛠️ 1. Continuous Location Tracking
   useEffect(() => {
     let subscription = null;
 
@@ -54,7 +55,6 @@ const MapScreen = ({ navigation }) => {
         return;
       }
 
-      // Initial Fix
       let loc = await Location.getCurrentPositionAsync({});
       setLocation({ 
           latitude: loc.coords.latitude, 
@@ -64,7 +64,6 @@ const MapScreen = ({ navigation }) => {
       });
       setLoadingLocation(false);
 
-      // 📡 Continuous Updates (Every 5 seconds or 10 meters)
       subscription = await Location.watchPositionAsync(
         { 
             accuracy: Location.Accuracy.High, 
@@ -74,13 +73,8 @@ const MapScreen = ({ navigation }) => {
         (newLoc) => {
             const { latitude, longitude } = newLoc.coords;
             
-            // Update my view
-            // setLocation({ latitude, longitude, latitudeDelta: 0.005, longitudeDelta: 0.005 });
-
-            // If Driver & Online -> Send to Server
             if (userInfo.role === 'driver' && isDriverOnline && socket?.connected) {
                 const dId = userInfo.driverId || userInfo.id;
-                console.log("📍 Driver Update:", latitude, longitude);
                 socket.emit('driverLocation', { driverId: dId, lat: latitude, lng: longitude });
             }
         }
@@ -88,25 +82,19 @@ const MapScreen = ({ navigation }) => {
     };
 
     startTracking();
+    return () => { if (subscription) subscription.remove(); };
+  }, [isDriverOnline, userInfo, socket]);
 
-    // Cleanup
-    return () => {
-        if (subscription) subscription.remove();
-    };
-  }, [isDriverOnline, userInfo, socket]); // Re-run if online status changes
-
-  // 🛠️ 2. App State Listener (Reconnect when coming back from Maps)
+  // 🛠️ 2. App State Listener
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-        console.log('⚡ App has come to the foreground!');
         if (userInfo.role === 'driver' && isDriverOnline && socket) {
-            socket.connect(); // Force reconnect
+            socket.connect(); 
         }
       }
       appState.current = nextAppState;
     });
-
     return () => subscription.remove();
   }, [isDriverOnline, socket]);
 
@@ -121,8 +109,8 @@ const MapScreen = ({ navigation }) => {
     });
 
     socket.on('driverMoved', (data) => {
-        // Rider View: Update Driver Car Icon
-        if (userInfo.role === 'rider' && (status === 'ACCEPTED' || status === 'ONGOING')) {
+        // 🔒 FIX: Only update if the moving driver is YOUR driver
+        if (userInfo.role === 'rider' && activeBooking && activeBooking.driverId === data.driverId) {
              setDriverLocation({ latitude: data.lat, longitude: data.lng });
         }
     });
@@ -154,24 +142,32 @@ const MapScreen = ({ navigation }) => {
     return () => socket.removeAllListeners();
   }, [socket, activeBooking, status]);
 
-  // --- MAP PIN LOGIC (With Reverse Geocode) ---
+  // --- MAP PIN LOGIC (With Async Address Fix) ---
   const handleRegionChangeComplete = async (region) => {
       if (isPinning) {
+          // 1. Set Coords Immediately
           if (pinType === 'pickup') {
               setLocation({ ...region, latitudeDelta: 0.005, longitudeDelta: 0.005 });
-              // Reverse Geocode Pickup
-              try {
-                  let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
-                  if(address[0]) setPickupAddr(`${address[0].name}, ${address[0].city}`);
-              } catch(e) { setPickupAddr("Pinned Location"); }
-
           } else {
               setDestination({ latitude: region.latitude, longitude: region.longitude });
-              // Reverse Geocode Drop
-              try {
-                  let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
-                  if(address[0]) setDropAddr(`${address[0].name}, ${address[0].city}`);
-              } catch(e) { setDropAddr("Pinned Destination"); }
+          }
+
+          // 2. Fetch Address (with Loading State)
+          setIsAddressLoading(true); // <--- START LOADING
+          try {
+              let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
+              if(address[0]) {
+                  const addrStr = `${address[0].name || ''}, ${address[0].city || ''}`;
+                  // Remove starting/trailing commas just in case
+                  const cleanAddr = addrStr.replace(/^, |, $/g, '');
+                  
+                  if (pinType === 'pickup') setPickupAddr(cleanAddr);
+                  else setDropAddr(cleanAddr);
+              }
+          } catch(e) { 
+              // Keep default text on failure
+          } finally {
+              setIsAddressLoading(false); // <--- STOP LOADING
           }
       }
   };
@@ -184,7 +180,6 @@ const MapScreen = ({ navigation }) => {
   // --- ACTIONS ---
 
   const requestRide = async (carType, calculatedFare) => {
-    // 🛡️ Safety: Don't send 0,0
     if (!destination || !destination.latitude || !destination.longitude) {
         return Alert.alert("Error", "Please select a valid destination.");
     }
@@ -241,7 +236,6 @@ const MapScreen = ({ navigation }) => {
       if (!activeBooking) return;
       try {
           let endLoc = location; 
-          // Get Final GPS Fix
           let loc = await Location.getCurrentPositionAsync({});
           endLoc = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
 
@@ -253,7 +247,6 @@ const MapScreen = ({ navigation }) => {
       } catch (e) { Alert.alert("Error", "Could not end ride."); }
   };
 
-  // Map Utils
   const openExternalMap = (lat, lng) => {
     const url = Platform.select({
       ios: `maps:0,0?q=${lat},${lng}`,
@@ -286,7 +279,7 @@ const MapScreen = ({ navigation }) => {
       >
         {!isPinning && destination && <Marker coordinate={destination} pinColor={colors.primary} />}
         
-        {/* 🚗 Driver Marker (Visible to Rider) */}
+        {/* 🚗 Driver Marker (Filtered) */}
         {!isPinning && driverLocation && (
             <Marker coordinate={driverLocation} title="Your Driver">
                 <View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View>
@@ -339,8 +332,16 @@ const MapScreen = ({ navigation }) => {
             )}
 
             {isPinning && (
-                <TouchableOpacity style={styles.confirmPinBtn} onPress={confirmPinSelection}>
-                    <Text style={styles.confirmPinText}>CONFIRM {pinType.toUpperCase()}</Text>
+                <TouchableOpacity 
+                    style={[styles.confirmPinBtn, { opacity: isAddressLoading ? 0.6 : 1 }]} 
+                    onPress={confirmPinSelection}
+                    disabled={isAddressLoading} // <--- Disable while fetching address
+                >
+                    {isAddressLoading ? (
+                        <ActivityIndicator color="black" />
+                    ) : (
+                        <Text style={styles.confirmPinText}>CONFIRM {pinType.toUpperCase()}</Text>
+                    )}
                 </TouchableOpacity>
             )}
 
@@ -421,7 +422,6 @@ const MapScreen = ({ navigation }) => {
   );
 };
 
-// ... Styles (Keep existing styles) ...
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },
   map: { flex: 1 },
