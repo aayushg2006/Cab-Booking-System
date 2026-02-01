@@ -257,28 +257,41 @@ exports.acceptRide = (req, res) => {
         bookingTimeouts.delete(bookingId);
     }
 
-    const safetySql = `UPDATE bookings SET status = 'accepted' WHERE id = ? AND driver_id = ? AND status = 'pending'`;
+    // 1. Update Status
+    const safetySql = `UPDATE bookings SET status = 'accepted', driver_id = ? WHERE id = ? AND status = 'pending'`;
 
-    pool.query(safetySql, [bookingId, driverId], (err, result) => {
+    pool.query(safetySql, [driverId, bookingId], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         
         if (result.affectedRows === 0) {
             return res.status(400).json({ error: "Ride request expired or already taken." });
         }
 
-        const driverQuery = `SELECT u.name, u.email, u.phone, d.car_model, d.car_plate FROM drivers d JOIN users u ON d.user_id = u.id WHERE d.id = ?`;
-        pool.query(driverQuery, [driverId], (err, rows) => {
-            const driverInfo = rows && rows[0] ? rows[0] : {};
+        // 2. Fetch Booking (for OTP) & Driver Details
+        const detailsQuery = `
+            SELECT b.otp, u.name, u.email, u.phone, d.car_model, d.car_plate 
+            FROM bookings b
+            JOIN drivers d ON d.id = ?
+            JOIN users u ON d.user_id = u.id
+            WHERE b.id = ?
+        `;
+
+        pool.query(detailsQuery, [driverId, bookingId], (err, rows) => {
+            if (err) return console.error("Error fetching details:", err);
+
+            const info = rows[0];
             const io = req.app.get('socketio');
             
+            // 3. Send OTP and Driver Info to Rider
             io.emit('rideAccepted', { 
                 bookingId, 
                 driverId,
-                driverName: driverInfo.name,
-                carModel: driverInfo.car_model,
-                carPlate: driverInfo.car_plate,
+                otp: info.otp, // <--- 🔑 CRITICAL FIX: SEND OTP
+                driverName: info.name,
+                carModel: info.car_model,
+                carPlate: info.car_plate,
                 rating: "5.0",
-                phone: driverInfo.phone
+                phone: info.phone
             });
             res.json({ message: "Ride Accepted" });
         });

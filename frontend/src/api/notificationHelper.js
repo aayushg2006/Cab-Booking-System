@@ -13,7 +13,7 @@ Notifications.setNotificationHandler({
 });
 
 export async function registerForPushNotificationsAsync() {
-  let token;
+  let token = null;
 
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('default', {
@@ -35,17 +35,28 @@ export async function registerForPushNotificationsAsync() {
     
     if (finalStatus !== 'granted') {
       alert('Failed to get push token for push notification!');
-      return;
+      return null;
     }
     
-    // 🔑 Get the Expo Push Token
-    token = (await Notifications.getExpoPushTokenAsync({
-      projectId: Constants.expoConfig.extra?.eas?.projectId,
-    })).data;
-    
-    console.log("🔔 Expo Push Token:", token);
+    // 🛡️ CRITICAL FIX: Graceful Failure for Expo Go
+    try {
+        // Attempt to get the ID from app config, or fallback safely
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.expoConfig?.slug;
+
+        token = (await Notifications.getExpoPushTokenAsync({
+            projectId: projectId, // Pass ID if available
+        })).data;
+        
+        console.log("🔔 Expo Push Token:", token);
+    } catch (e) {
+        // If this fails (common in Expo Go SDK 53+), we catch it and continue.
+        // This prevents the Login screen from freezing.
+        console.warn("⚠️ Push Notification Warning: Could not get token.", e.message);
+        console.log("👉 Note: Remote Notifications require a 'Development Build' in Expo SDK 53+.");
+        token = null; 
+    }
   } else {
-    alert('Must use physical device for Push Notifications');
+    // alert('Must use physical device for Push Notifications');
   }
 
   return token;
