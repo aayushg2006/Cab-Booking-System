@@ -4,7 +4,7 @@ import { AuthContext } from './AuthContext';
 
 export const SocketContext = createContext();
 
-// Use the same URL as the API
+// 🟢 FIX: Use Env Variable first, fallback to Localhost (Update the fallback to your PC IP)
 const SOCKET_URL = process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.109:3000';
 
 export const SocketProvider = ({ children }) => {

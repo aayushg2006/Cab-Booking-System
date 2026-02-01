@@ -78,10 +78,19 @@ const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) 
 
 const styles = StyleSheet.create({
   panel: {
-    position: 'absolute', bottom: 0, width: '100%',
-    backgroundColor: colors.secondary, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-    padding: 20, paddingBottom: 40, alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 10, elevation: 15
+    // 🔴 REMOVED: position: 'absolute', bottom: 0 
+    // This allows the panel to sit BELOW the payment buttons naturally
+    width: '100%',
+    backgroundColor: colors.secondary, 
+    borderTopLeftRadius: 20, 
+    borderTopRightRadius: 20,
+    padding: 20, 
+    paddingBottom: 40, 
+    alignItems: 'center',
+    shadowColor: '#000', 
+    shadowOpacity: 0.5, 
+    shadowRadius: 10, 
+    elevation: 15
   },
   handle: { width: 50, height: 5, backgroundColor: '#444', borderRadius: 5, marginBottom: 15 },
   title: { color: colors.text, fontSize: 18, fontWeight: 'bold', marginBottom: 15 },

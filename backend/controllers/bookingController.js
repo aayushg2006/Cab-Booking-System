@@ -286,12 +286,13 @@ exports.acceptRide = (req, res) => {
             io.emit('rideAccepted', { 
                 bookingId, 
                 driverId,
-                otp: info.otp, // <--- 🔑 CRITICAL FIX: SEND OTP
+                otp: info.otp, 
                 driverName: info.name,
                 carModel: info.car_model,
                 carPlate: info.car_plate,
                 rating: "5.0",
-                phone: info.phone
+                phone: info.phone,
+                eta: 5 // 🟢 FIX: Send ETA (Driver to Pickup) - Default 5 min for now
             });
             res.json({ message: "Ride Accepted" });
         });
@@ -325,13 +326,6 @@ exports.endRide = (req, res) => {
         // Recalculate actual distance
         if (dropLat && dropLng) {
             const actualDist = calculateDistance(booking.pickup_lat, booking.pickup_lng, dropLat, dropLng);
-            // Simple calculation for final adjustment (Keep it simple to avoid API cost on end ride)
-            // Or re-use the Google Matrix API if you want 100% accuracy here too.
-            // For now, let's stick to the agreed fare unless deviation is huge.
-            // But usually, apps charge based on ACTUAL time/dist.
-            // Let's just update based on the original agreed logic + distance travelled.
-            
-            // NOTE: Ideally, you track the route live. Here we just take start/end points.
             finalFare = Math.round(40 + (actualDist * 12)); 
         }
 
@@ -381,9 +375,6 @@ exports.triggerSOS = (req, res) => {
     const { bookingId, lat, lng } = req.body;
     
     console.log(`🚨 SOS TRIGGERED! Booking: ${bookingId}, Location: ${lat}, ${lng}`);
-    
-    // In a real app, send SMS to emergency contacts via Twilio here
-    
     const sql = `UPDATE bookings SET sos_alert = TRUE, status = 'flagged' WHERE id = ?`;
     pool.query(sql, [bookingId], (err) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -400,9 +391,6 @@ exports.rateRide = (req, res) => {
     const sql = `UPDATE bookings SET rating = ?, review = ? WHERE id = ?`;
     pool.query(sql, [rating, review, bookingId], (err) => {
         if (err) return res.status(500).json({ error: err.message });
-        
-        // Bonus: You could update the driver's average rating in 'drivers' table here
-        
         res.json({ message: "Rating submitted successfully" });
     });
 };
