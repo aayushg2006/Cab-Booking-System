@@ -14,10 +14,11 @@ import { colors } from '../theme/colors';
 import RideRequestPanel from '../components/RideRequestPanel';
 import DriverRequestModal from '../components/DriverRequestModal';
 import OTPModal from '../components/OTPModal';
+import RatingModal from '../components/RatingModal'; // <--- IMPORT
 
 const GOOGLE_API_KEY = process.env.EXPO_PUBLIC_GOOGLE_API_KEY;
 
-const MapScreen = ({ navigation }) => {
+const MapScreen = ({ navigation, route }) => { // <--- ADD route
   const { userInfo, userToken } = useContext(AuthContext);
   const { socket } = useContext(SocketContext);
   const mapRef = useRef(null);
@@ -34,7 +35,10 @@ const MapScreen = ({ navigation }) => {
   const [routeInfo, setRouteInfo] = useState({ distance: 0, fare: 0, duration: 0 });
   const [status, setStatus] = useState('IDLE'); 
   const [isPinning, setIsPinning] = useState(false); 
-  const [pinType, setPinType] = useState('pickup'); // 'pickup' or 'drop'
+  const [pinType, setPinType] = useState('pickup'); 
+  const [paymentMode, setPaymentMode] = useState('cash'); 
+  const [isEstimating, setIsEstimating] = useState(false);
+  const [showRatingModal, setShowRatingModal] = useState(false); // <--- NEW STATE
 
   // Booking & Driver
   const [activeBooking, setActiveBooking] = useState(null);
@@ -43,6 +47,15 @@ const MapScreen = ({ navigation }) => {
   const [showOtpModal, setShowOtpModal] = useState(false);
   const [driverLocation, setDriverLocation] = useState(null); 
   const [loadingLocation, setLoadingLocation] = useState(true);
+
+  // 🛠️ 0. Check for Rating Trigger (From Payment Screen)
+  useEffect(() => {
+      if (route.params?.showRating && activeBooking) {
+          setShowRatingModal(true);
+          // Clear params so it doesn't open again
+          navigation.setParams({ showRating: false });
+      }
+  }, [route.params]);
 
   // 🛠️ 1. Continuous Location Tracking
   useEffect(() => {
@@ -65,14 +78,9 @@ const MapScreen = ({ navigation }) => {
       setLoadingLocation(false);
 
       subscription = await Location.watchPositionAsync(
-        { 
-            accuracy: Location.Accuracy.High, 
-            timeInterval: 5000, 
-            distanceInterval: 10 
-        }, 
+        { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 10 }, 
         (newLoc) => {
             const { latitude, longitude } = newLoc.coords;
-            
             if (userInfo.role === 'driver' && isDriverOnline && socket?.connected) {
                 const dId = userInfo.driverId || userInfo.id;
                 socket.emit('driverLocation', { driverId: dId, lat: latitude, lng: longitude });
@@ -85,20 +93,17 @@ const MapScreen = ({ navigation }) => {
     return () => { if (subscription) subscription.remove(); };
   }, [isDriverOnline, userInfo, socket]);
 
-  // 🛠️ 2. App State Listener
+  // 🛠️ 2. App State & Socket Listeners
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
       if (appState.current.match(/inactive|background/) && nextAppState === 'active') {
-        if (userInfo.role === 'driver' && isDriverOnline && socket) {
-            socket.connect(); 
-        }
+        if (userInfo.role === 'driver' && isDriverOnline && socket) socket.connect(); 
       }
       appState.current = nextAppState;
     });
     return () => subscription.remove();
   }, [isDriverOnline, socket]);
 
-  // 3. Socket Listeners
   useEffect(() => {
     if (!socket) return;
 
@@ -109,7 +114,6 @@ const MapScreen = ({ navigation }) => {
     });
 
     socket.on('driverMoved', (data) => {
-        // 🔒 FIX: Only update if the moving driver is YOUR driver
         if (userInfo.role === 'rider' && activeBooking && activeBooking.driverId === data.driverId) {
              setDriverLocation({ latitude: data.lat, longitude: data.lng });
         }
@@ -127,19 +131,17 @@ const MapScreen = ({ navigation }) => {
         setStatus('COMPLETED');
         if (userInfo.role === 'rider') {
             Alert.alert('Ride Completed', `Total Fare: ₹${fare}`);
-            navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId });
+            navigation.navigate('Payment', { fare, bookingId: activeBooking?.bookingId, paymentMode: activeBooking?.paymentMode });
         } else {
             Alert.alert('Ride Ended', `Collect ₹${fare} from the rider.`);
             setStatus('IDLE'); 
         }
         setDestination(null);
-        setActiveBooking(null);
+        // Don't clear activeBooking yet, we need it for Rating
         setDriverLocation(null);
     });
 
     socket.on('newRideRequest', (data) => setIncomingRequest(data));
-
-    // 🆕 NEW: Close modal if server says "Time's up!"
     socket.on('requestTimeout', () => {
         Alert.alert("Missed", "You missed the ride request.");
         setIncomingRequest(null);
@@ -148,33 +150,25 @@ const MapScreen = ({ navigation }) => {
     return () => socket.removeAllListeners();
   }, [socket, activeBooking, status]);
 
-  // --- MAP PIN LOGIC (With Async Address Fix) ---
+  // --- MAP LOGIC ---
   const handleRegionChangeComplete = async (region) => {
       if (isPinning) {
-          // 1. Set Coords Immediately
           if (pinType === 'pickup') {
               setLocation({ ...region, latitudeDelta: 0.005, longitudeDelta: 0.005 });
           } else {
               setDestination({ latitude: region.latitude, longitude: region.longitude });
           }
 
-          // 2. Fetch Address (with Loading State)
           setIsAddressLoading(true); 
           try {
               let address = await Location.reverseGeocodeAsync({ latitude: region.latitude, longitude: region.longitude });
               if(address[0]) {
-                  const addrStr = `${address[0].name || ''}, ${address[0].city || ''}`;
-                  // Remove starting/trailing commas just in case
-                  const cleanAddr = addrStr.replace(/^, |, $/g, '');
-                  
+                  const cleanAddr = `${address[0].name || ''}, ${address[0].city || ''}`.replace(/^, |, $/g, '');
                   if (pinType === 'pickup') setPickupAddr(cleanAddr);
                   else setDropAddr(cleanAddr);
               }
-          } catch(e) { 
-              // Keep default text on failure
-          } finally {
-              setIsAddressLoading(false); 
-          }
+          } catch(e) {} 
+          finally { setIsAddressLoading(false); }
       }
   };
 
@@ -183,12 +177,36 @@ const MapScreen = ({ navigation }) => {
       if (pinType === 'drop') setStatus('SELECTING');
   };
 
-  // --- ACTIONS ---
+  // Estimate from Server
+  const onDirectionsReady = async (result) => {
+      setIsEstimating(true);
+      try {
+          const res = await client.post('/bookings/estimate', {
+              pickupLat: location.latitude,
+              pickupLng: location.longitude,
+              dropLat: destination.latitude,
+              dropLng: destination.longitude
+          }, { headers: { Authorization: `Bearer ${userToken}` }});
 
-  const requestRide = async (carType, calculatedFare) => {
-    if (!destination || !destination.latitude || !destination.longitude) {
-        return Alert.alert("Error", "Please select a valid destination.");
-    }
+          setRouteInfo({ 
+              distance: res.data.distance, 
+              fare: res.data.fare, 
+              duration: res.data.duration 
+          });
+
+          if (res.data.surge > 1.0) {
+              Alert.alert("⚡ High Demand", `Fares are slightly higher (${res.data.surge}x) due to traffic/demand.`);
+          }
+      } catch (err) {
+          const price = Math.round(50 + (result.distance * 15)); 
+          setRouteInfo({ distance: result.distance.toFixed(1), fare: price, duration: result.duration.toFixed(0) });
+      } finally {
+          setIsEstimating(false);
+      }
+  };
+
+  const requestRide = async (carType) => {
+    if (!destination) return Alert.alert("Error", "Please select a valid destination.");
 
     setStatus('SEARCHING');
     try {
@@ -200,11 +218,12 @@ const MapScreen = ({ navigation }) => {
             dropLng: destination.longitude,
             pickupAddress: pickupAddr, 
             dropAddress: dropAddr,     
-            fare: calculatedFare,
-            carType: carType
+            fare: routeInfo.fare, 
+            carType: carType,
+            paymentMode: paymentMode
         }, { headers: { Authorization: `Bearer ${userToken}` }});
         
-        setActiveBooking({ bookingId: res.data.bookingId, otp: res.data.otp }); 
+        setActiveBooking({ bookingId: res.data.bookingId, otp: res.data.otp, paymentMode }); 
     } catch (err) {
         setStatus('SELECTING');
         Alert.alert('Booking Failed', err.response?.data?.message || 'No drivers available.');
@@ -253,6 +272,49 @@ const MapScreen = ({ navigation }) => {
       } catch (e) { Alert.alert("Error", "Could not end ride."); }
   };
 
+  // 🚨 SOS FUNCTION
+  const handleSOS = async () => {
+      Alert.alert(
+          "🚨 EMERGENCY SOS",
+          "Are you in danger? This will alert our team and dial the Police.",
+          [
+              { text: "Cancel", style: "cancel" },
+              { 
+                  text: "CALL POLICE", 
+                  style: "destructive", 
+                  onPress: async () => {
+                      try {
+                          await client.post('/bookings/sos', {
+                              bookingId: activeBooking.bookingId,
+                              lat: location.latitude,
+                              lng: location.longitude
+                          }, { headers: { Authorization: `Bearer ${userToken}` }});
+                      } catch(e) { console.log("SOS Log Failed"); }
+                      Linking.openURL('tel:100'); 
+                  }
+              }
+          ]
+      );
+  };
+
+  // ⭐ RATING SUBMIT
+  const submitRating = async (rating, review) => {
+      try {
+          await client.post('/bookings/rate', {
+              bookingId: activeBooking.bookingId,
+              rating,
+              review
+          }, { headers: { Authorization: `Bearer ${userToken}` }});
+          
+          setShowRatingModal(false);
+          setActiveBooking(null); // Finally clear booking
+          setStatus('IDLE');
+          Alert.alert("Thank you!", "Your feedback helps us improve.");
+      } catch(e) {
+          Alert.alert("Error", "Could not submit rating");
+      }
+  };
+
   const openExternalMap = (lat, lng) => {
     const url = Platform.select({
       ios: `maps:0,0?q=${lat},${lng}`,
@@ -261,25 +323,11 @@ const MapScreen = ({ navigation }) => {
     Linking.openURL(url);
   };
 
-  const onDirectionsReady = (result) => {
-      const price = Math.round(50 + (result.distance * 15)); 
-      setRouteInfo({ distance: result.distance.toFixed(1), fare: price, duration: result.duration.toFixed(0) });
-  };
-
-  // 🚀 REJECTION LOGIC
   const rejectRide = () => {
       if (!incomingRequest) return;
-      
       const dId = userInfo.driverId || userInfo.id;
-      console.log("Declining Ride...");
-      
-      // Emit 'declineRide' so the server can find the next driver
-      socket.emit('declineRide', { 
-          bookingId: incomingRequest.bookingId, 
-          driverId: dId 
-      });
-
-      setIncomingRequest(null); // Hide modal locally
+      socket.emit('declineRide', { bookingId: incomingRequest.bookingId, driverId: dId });
+      setIncomingRequest(null); 
   };
 
   if (loadingLocation || !location) return <View style={styles.loading}><ActivityIndicator size="large" color={colors.primary} /></View>;
@@ -301,7 +349,7 @@ const MapScreen = ({ navigation }) => {
       >
         {!isPinning && destination && <Marker coordinate={destination} pinColor={colors.primary} />}
         
-        {/* 🚗 Driver Marker (Filtered) */}
+        {/* Driver Marker */}
         {!isPinning && driverLocation && (
             <Marker coordinate={driverLocation} title="Your Driver">
                 <View style={styles.carMarker}><Ionicons name="car-sport" size={24} color="black" /></View>
@@ -309,7 +357,14 @@ const MapScreen = ({ navigation }) => {
         )}
         
         {!isPinning && destination && GOOGLE_API_KEY && (
-            <MapViewDirections origin={location} destination={destination} apikey={GOOGLE_API_KEY} strokeWidth={4} strokeColor={colors.primary} onReady={onDirectionsReady} />
+            <MapViewDirections 
+                origin={location} 
+                destination={destination} 
+                apikey={GOOGLE_API_KEY} 
+                strokeWidth={4} 
+                strokeColor={colors.primary} 
+                onReady={onDirectionsReady}
+            />
         )}
       </MapView>
 
@@ -359,44 +414,60 @@ const MapScreen = ({ navigation }) => {
                     onPress={confirmPinSelection}
                     disabled={isAddressLoading} 
                 >
-                    {isAddressLoading ? (
-                        <ActivityIndicator color="black" />
-                    ) : (
-                        <Text style={styles.confirmPinText}>CONFIRM {pinType.toUpperCase()}</Text>
-                    )}
+                    {isAddressLoading ? <ActivityIndicator color="black" /> : <Text style={styles.confirmPinText}>CONFIRM {pinType.toUpperCase()}</Text>}
                 </TouchableOpacity>
             )}
 
             {(status === 'SELECTING' || status === 'SEARCHING') && (
-                <RideRequestPanel 
-                    fare={routeInfo.fare}
-                    distance={routeInfo.distance}
-                    duration={routeInfo.duration}
-                    isSearching={status === 'SEARCHING'}
-                    onCancel={() => { setStatus('IDLE'); setDestination(null); }}
-                    onRequest={requestRide}
-                />
+                <View style={styles.bottomSheetContainer}>
+                    <View style={styles.paymentSelector}>
+                        <TouchableOpacity style={[styles.paymentBtn, paymentMode === 'cash' && styles.activePayment]} onPress={() => setPaymentMode('cash')}>
+                            <Ionicons name="cash" size={20} color={paymentMode === 'cash' ? 'black' : 'white'} />
+                            <Text style={[styles.paymentText, paymentMode === 'cash' && {color:'black'}]}> Cash</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.paymentBtn, paymentMode === 'online' && styles.activePayment]} onPress={() => setPaymentMode('online')}>
+                            <Ionicons name="card" size={20} color={paymentMode === 'online' ? 'black' : 'white'} />
+                            <Text style={[styles.paymentText, paymentMode === 'online' && {color:'black'}]}> Online</Text>
+                        </TouchableOpacity>
+                    </View>
+
+                    {isEstimating ? (
+                        <View style={{height: 200, backgroundColor: '#1a1a1a', justifyContent: 'center', alignItems: 'center'}}>
+                            <ActivityIndicator size="large" color={colors.primary} />
+                            <Text style={{color:'white', marginTop:10}}>Calculating Fare...</Text>
+                        </View>
+                    ) : (
+                        <RideRequestPanel fare={routeInfo.fare} distance={routeInfo.distance} duration={routeInfo.duration} isSearching={status === 'SEARCHING'} onCancel={() => { setStatus('IDLE'); setDestination(null); }} onRequest={requestRide} />
+                    )}
+                </View>
             )}
             
             {(status === 'ACCEPTED' || status === 'ONGOING') && activeBooking && (
-                <View style={styles.driverInfoCard}>
-                     <View style={styles.driverHeader}>
-                        <View style={styles.avatar}><Text style={{fontSize:20}}>🚘</Text></View>
-                        <View style={{marginLeft: 15}}>
-                            <Text style={styles.driverName}>{activeBooking.driverName || 'Driver'}</Text>
-                            <Text style={styles.carInfo}>{activeBooking.carModel}</Text>
-                            <Text style={styles.rating}>⭐ 5.0</Text>
-                        </View>
-                     </View>
-                     <View style={styles.divider} />
-                     <View style={styles.otpBox}>
-                        <Text style={styles.otpLabel}>OTP PIN</Text>
-                        <Text style={styles.otpCode}>{activeBooking.otp}</Text>
-                     </View>
-                     <Text style={styles.statusText}>
-                        {status === 'ACCEPTED' ? `Driver arriving in ~${routeInfo.duration} min` : 'Ride in Progress'}
-                     </Text>
-                </View>
+                <>
+                    {/* 🚨 SOS BUTTON */}
+                    <TouchableOpacity style={styles.sosBtn} onPress={handleSOS}>
+                        <Text style={styles.sosText}>SOS</Text>
+                    </TouchableOpacity>
+
+                    <View style={styles.driverInfoCard}>
+                         <View style={styles.driverHeader}>
+                            <View style={styles.avatar}><Text style={{fontSize:20}}>🚘</Text></View>
+                            <View style={{marginLeft: 15}}>
+                                <Text style={styles.driverName}>{activeBooking.driverName || 'Driver'}</Text>
+                                <Text style={styles.carInfo}>{activeBooking.carModel}</Text>
+                                <Text style={styles.rating}>⭐ 5.0</Text>
+                            </View>
+                         </View>
+                         <View style={styles.divider} />
+                         <View style={styles.otpBox}>
+                            <Text style={styles.otpLabel}>OTP PIN</Text>
+                            <Text style={styles.otpCode}>{activeBooking.otp}</Text>
+                         </View>
+                         <Text style={styles.statusText}>
+                            {status === 'ACCEPTED' ? `Driver arriving in ~${routeInfo.duration} min` : 'Ride in Progress'}
+                         </Text>
+                    </View>
+                </>
             )}
         </>
       )}
@@ -436,16 +507,17 @@ const MapScreen = ({ navigation }) => {
                 </View>
             )}
 
-            {/* 🚀 UPGRADE: Pass rejectRide to onReject */}
-            <DriverRequestModal 
-                visible={!!incomingRequest} 
-                request={incomingRequest} 
-                onAccept={acceptRide} 
-                onReject={rejectRide} 
-            />
+            <DriverRequestModal visible={!!incomingRequest} request={incomingRequest} onAccept={acceptRide} onReject={rejectRide} />
             <OTPModal visible={showOtpModal} onSubmit={startRide} onCancel={() => setShowOtpModal(false)} />
         </>
       )}
+
+      {/* ⭐ RATING MODAL */}
+      <RatingModal 
+          visible={showRatingModal} 
+          onSubmit={submitRating} 
+          onClose={() => setShowRatingModal(false)} 
+      />
     </View>
   );
 };
@@ -455,6 +527,11 @@ const styles = StyleSheet.create({
   map: { flex: 1 },
   loading: { flex: 1, justifyContent:'center', alignItems:'center', backgroundColor:'black' },
   menuBtn: { position: 'absolute', top: 50, left: 20, zIndex: 20, backgroundColor: 'white', padding: 10, borderRadius: 25, elevation: 5 },
+  
+  // SOS Button
+  sosBtn: { position: 'absolute', top: 50, right: 20, backgroundColor: 'red', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 10, zIndex: 50, borderWidth: 2, borderColor: 'white' },
+  sosText: { color: 'white', fontWeight: 'bold', fontSize: 18 },
+
   searchContainer: { position: 'absolute', top: 100, width: '90%', alignSelf: 'center', zIndex: 10 },
   searchInput: { backgroundColor: '#333', color: 'white', borderRadius: 10, paddingHorizontal: 10 },
   
@@ -464,6 +541,12 @@ const styles = StyleSheet.create({
   centerPinContainer: { position: 'absolute', top: '50%', left: '50%', marginTop: -35, marginLeft: -20, zIndex: 20 },
   confirmPinBtn: { position: 'absolute', bottom: 50, width: '80%', alignSelf: 'center', backgroundColor: colors.primary, padding: 15, borderRadius: 10, alignItems: 'center', zIndex:20 },
   confirmPinText: { color: 'black', fontWeight: 'bold', fontSize: 16 },
+
+  bottomSheetContainer: { position: 'absolute', bottom: 0, width: '100%' },
+  paymentSelector: { flexDirection: 'row', justifyContent: 'center', marginBottom: 10, backgroundColor: '#1a1a1a', padding: 10, borderRadius: 15, width: '90%', alignSelf: 'center', borderWidth: 1, borderColor: '#333' },
+  paymentBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 20, borderRadius: 20, marginHorizontal: 10, borderWidth: 1, borderColor: '#444' },
+  activePayment: { backgroundColor: colors.primary, borderColor: colors.primary },
+  paymentText: { color: 'white', fontWeight: 'bold', marginLeft: 5 },
 
   driverInfoCard: { position: 'absolute', bottom: 30, width: '90%', alignSelf: 'center', backgroundColor: '#1a1a1a', padding: 20, borderRadius: 15, borderWidth: 1, borderColor: '#333', shadowColor:'#000', elevation:10 },
   driverHeader: { flexDirection: 'row', alignItems: 'center' },

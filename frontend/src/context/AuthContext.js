@@ -3,6 +3,7 @@ import React, { createContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
 import { Alert } from 'react-native';
+import { registerForPushNotificationsAsync } from '../api/notificationHelper';
 
 export const AuthContext = createContext();
 
@@ -31,23 +32,27 @@ export const AuthProvider = ({ children }) => {
     isLoggedIn();
   }, []);
 
-  const login = async (email, password) => {
+const login = async (email, password) => {
     setIsLoading(true);
     try {
-      const res = await client.post('/auth/login', { email, password });
+      // 🔔 1. Get Push Token
+      const pushToken = await registerForPushNotificationsAsync();
+
+      // 🔔 2. Send token with credentials
+      const res = await client.post('/auth/login', { 
+          email, 
+          password,
+          pushToken // <--- Sending to Backend
+      });
       
-      // 🛠 FIX: Ensure driverId exists if role is driver
       let user = res.data.user;
-      if (user.role === 'driver' && !user.driverId) {
-          user.driverId = user.id; 
-      }
+      if (user.role === 'driver' && !user.driverId) user.driverId = user.id;
 
       setUserInfo(user);
       setUserToken(res.data.token);
 
       AsyncStorage.setItem('userToken', res.data.token);
       AsyncStorage.setItem('userInfo', JSON.stringify(user));
-      console.log("✅ Login Successful. User:", user);
 
     } catch (e) {
       console.log('Login Failed:', e);
@@ -56,10 +61,18 @@ export const AuthProvider = ({ children }) => {
     setIsLoading(false);
   };
 
-  const register = async (userData) => {
+const register = async (userData) => {
     setIsLoading(true);
     try {
-        const res = await client.post('/auth/register', userData);
+        // 🔔 1. Get Push Token
+        const pushToken = await registerForPushNotificationsAsync();
+
+        // 🔔 2. Send token with registration data
+        const res = await client.post('/auth/register', {
+            ...userData,
+            pushToken // <--- Sending to Backend
+        });
+
         let user = res.data.user;
         if (user.role === 'driver' && !user.driverId) user.driverId = user.id;
 
@@ -68,7 +81,6 @@ export const AuthProvider = ({ children }) => {
         AsyncStorage.setItem('userToken', res.data.token);
         AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
-        console.log('Register Failed:', e.response?.data?.error);
         Alert.alert('Registration Failed', e.response?.data?.error || 'Error');
     }
     setIsLoading(false);

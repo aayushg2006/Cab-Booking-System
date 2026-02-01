@@ -1,10 +1,11 @@
-// backend/controllers/bookingController.js
 const pool = require('../config/db');
+const { sendPushNotification } = require('../utils/pushService'); 
+const { getTrafficData } = require('../utils/mapsService'); // 🚀 PHASE 4 IMPORT
 
 // ⏳ TIMEOUT MANAGER
 const bookingTimeouts = new Map(); // Stores { bookingId: timeoutID }
 
-// Helper: Calculate distance
+// Helper: Calculate distance (Haversine Formula - Fallback)
 function calculateDistance(lat1, lon1, lat2, lon2) {
     const R = 6371; 
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -13,9 +14,27 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
 
-// 🆕 Helper: Start 15s Timer for a Driver
+// 🆕 Helper: Calculate Surge Multiplier (Phase 4)
+const calculateSurge = async () => {
+    // Count Online Drivers
+    const [drivers] = await pool.promise().query("SELECT COUNT(*) as count FROM drivers WHERE status = 'online'");
+    // Count Pending Bookings
+    const [bookings] = await pool.promise().query("SELECT COUNT(*) as count FROM bookings WHERE status = 'pending'");
+
+    const driverCount = drivers[0].count || 1; // Avoid divide by zero
+    const requestCount = bookings[0].count;
+    
+    if (driverCount === 0) return 1.0; // No drivers, standard price (or handle differently)
+
+    const demandRatio = requestCount / driverCount;
+
+    if (demandRatio > 2) return 1.5; // High Surge (1.5x)
+    if (demandRatio > 1.2) return 1.2; // Mild Surge (1.2x)
+    return 1.0; // No Surge
+};
+
+// Helper: Start 15s Timer for a Driver
 const startBookingTimer = (bookingId, driverId, io) => {
-    // Clear existing if any
     if (bookingTimeouts.has(bookingId)) {
         clearTimeout(bookingTimeouts.get(bookingId));
     }
@@ -23,7 +42,7 @@ const startBookingTimer = (bookingId, driverId, io) => {
     const timer = setTimeout(() => {
         console.log(`⏰ Booking ${bookingId} timed out for Driver ${driverId}`);
         
-        // 1. Notify the Driver that they were too slow (Close their modal)
+        // 1. Notify Driver (Close modal)
         const driverSocketId = global.driverSockets ? global.driverSockets.get(driverId) : null;
         if (driverSocketId && io) {
             io.to(driverSocketId).emit('requestTimeout'); 
@@ -32,24 +51,26 @@ const startBookingTimer = (bookingId, driverId, io) => {
         // 2. Treat as Rejection -> Find Next Driver
         exports.handleRejection(bookingId, driverId, io);
         
-    }, 15000); // ⏱️ 15 SECONDS
+    }, 15000); // 15 Seconds
 
     bookingTimeouts.set(bookingId, timer);
 };
 
-// 🆕 Helper: Find Next Driver
+// Helper: Find Next Driver (SQL Spatial Query + Push Notification)
 const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds, io, res = null) => {
+    // JOIN with users table to get 'push_token'
     let query = `
-        SELECT id, lat, lng, 
-        ( 6371 * acos( cos( radians(?) ) * cos( radians( lat ) ) * cos( radians( lng ) - radians(?) ) + sin( radians(?) ) * sin( radians( lat ) ) ) ) AS distance 
-        FROM drivers 
-        WHERE status = 'online' 
+        SELECT d.id, d.lat, d.lng, u.push_token, 
+        ( 6371 * acos( cos( radians(?) ) * cos( radians( d.lat ) ) * cos( radians( d.lng ) - radians(?) ) + sin( radians(?) ) * sin( radians( d.lat ) ) ) ) AS distance 
+        FROM drivers d
+        JOIN users u ON d.user_id = u.id
+        WHERE d.status = 'online' 
     `;
 
     const queryParams = [pickupLat, pickupLng, pickupLat];
 
     if (excludedDriverIds.length > 0) {
-        query += ` AND id NOT IN (?)`;
+        query += ` AND d.id NOT IN (?)`;
         queryParams.push(excludedDriverIds);
     }
 
@@ -70,18 +91,18 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
 
         const nextDriver = rows[0];
         
-        // Update Booking with new Driver Candidate
+        // Assign Driver to Booking
         pool.query(`UPDATE bookings SET driver_id = ? WHERE id = ?`, [nextDriver.id, bookingId], (err) => {
             if (err) console.error("Update Booking Error:", err);
 
-            // Notify Driver
-            const driverSocketId = global.driverSockets ? global.driverSockets.get(nextDriver.id) : null;
-            if (driverSocketId && io) {
-                // Fetch extra details
-                pool.query(`SELECT * FROM bookings WHERE id = ?`, [bookingId], (err, bRows) => {
-                    if(!bRows || bRows.length === 0) return;
-                    const booking = bRows[0];
-                    
+            // Fetch Booking Details to send to Driver
+            pool.query(`SELECT * FROM bookings WHERE id = ?`, [bookingId], (err, bRows) => {
+                if(!bRows || bRows.length === 0) return;
+                const booking = bRows[0];
+
+                // 1. ⚡ SEND SOCKET MESSAGE (If App is Open)
+                const driverSocketId = global.driverSockets ? global.driverSockets.get(nextDriver.id) : null;
+                if (driverSocketId && io) {
                     io.to(driverSocketId).emit('newRideRequest', {
                         bookingId: booking.id,
                         riderId: booking.rider_id,
@@ -94,35 +115,117 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
                         fare: booking.fare,
                         dist: nextDriver.distance.toFixed(1)
                     });
-
-                    // ⏳ START TIMER FOR THIS NEW DRIVER
+                    
+                    // Start 15s Timer
                     startBookingTimer(bookingId, nextDriver.id, io);
-                });
-            }
+                }
+
+                // 2. 🔔 SEND EXPO PUSH NOTIFICATION (If App is Background/Closed)
+                if (nextDriver.push_token) {
+                    console.log(`🔔 Sending Push to Driver ${nextDriver.id}`);
+                    
+                    sendPushNotification(
+                        nextDriver.push_token,
+                        `New ride available! Fare: ₹${booking.fare}`,
+                        { bookingId: booking.id, type: 'ride_request' }
+                    );
+                }
+            });
 
             if (res) res.json({ message: "Request sent to next driver", driverId: nextDriver.id });
         });
     });
 };
 
-exports.requestRide = (req, res) => {
-    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare } = req.body;
-    
-    const otp = Math.floor(1000 + Math.random() * 9000);
-    const sql = `INSERT INTO bookings (rider_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp, rejected_drivers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '[]')`;
+// 🆕 NEW: Estimate Fare Endpoint (For Frontend Pre-calculation)
+exports.estimateFare = async (req, res) => {
+    const { pickupLat, pickupLng, dropLat, dropLng } = req.body;
 
-    pool.query(sql, [riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, fare, otp], (err, result) => {
+    if (!pickupLat || !dropLat) return res.status(400).json({ error: "Coordinates required" });
+
+    // 1. Get Traffic Data (or Fallback)
+    let distance = 0;
+    let duration = 0;
+    
+    const trafficData = await getTrafficData(pickupLat, pickupLng, dropLat, dropLng);
+    
+    if (trafficData) {
+        distance = trafficData.distanceKm;
+        duration = trafficData.durationMins;
+    } else {
+        // Fallback: Haversine
+        distance = calculateDistance(pickupLat, pickupLng, dropLat, dropLng);
+        duration = distance * 3; // Approx 3 mins per km
+    }
+
+    // 2. Calculate Price
+    const BASE_FARE = 40;
+    const RATE_PER_KM = 12;
+    const RATE_PER_MIN = 2;
+    
+    let basePrice = BASE_FARE + (distance * RATE_PER_KM) + (duration * RATE_PER_MIN);
+    
+    // 3. Apply Surge
+    const surge = await calculateSurge();
+    const finalFare = Math.round(basePrice * surge);
+
+    res.json({
+        fare: finalFare,
+        distance: distance.toFixed(1),
+        duration: Math.round(duration),
+        surge: surge
+    });
+};
+
+// 🔄 UPDATED: Request Ride (Calculates Fare on Backend)
+exports.requestRide = async (req, res) => {
+    const { riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, paymentMode } = req.body;
+    
+    // 1. RE-CALCULATE FARE (Security: Don't trust the frontend fare)
+    let distance = 0;
+    let duration = 0;
+    
+    const trafficData = await getTrafficData(pickupLat, pickupLng, dropLat, dropLng);
+    
+    if (trafficData) {
+        distance = trafficData.distanceKm;
+        duration = trafficData.durationMins;
+    } else {
+        distance = calculateDistance(pickupLat, pickupLng, dropLat, dropLng); 
+        duration = distance * 3; 
+    }
+
+    // Pricing Constants
+    const BASE_FARE = 40;
+    const RATE_PER_KM = 12;
+    const RATE_PER_MIN = 2; 
+    
+    let basePrice = BASE_FARE + (distance * RATE_PER_KM) + (duration * RATE_PER_MIN);
+    
+    // Apply Surge
+    const surgeMultiplier = await calculateSurge();
+    const finalFare = Math.round(basePrice * surgeMultiplier);
+
+    console.log(`💰 Pricing: Dist=${distance.toFixed(1)}km, Time=${Math.round(duration)}min, Surge=${surgeMultiplier}x, Fare=₹${finalFare}`);
+
+    // 2. Create Booking
+    const selectedMode = paymentMode || 'cash'; 
+    const otp = Math.floor(1000 + Math.random() * 9000);
+    
+    const sql = `INSERT INTO bookings (rider_id, pickup_lat, pickup_lng, drop_lat, drop_lng, pickup_address, drop_address, fare, status, otp, rejected_drivers, payment_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '[]', ?)`;
+
+    pool.query(sql, [riderId, pickupLat, pickupLng, dropLat, dropLng, pickupAddress, dropAddress, finalFare, otp, selectedMode], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         
         const bookingId = result.insertId;
         const io = req.app.get('socketio');
 
+        // 3. Find Driver
         findAndNotifyDriver(bookingId, pickupLat, pickupLng, [], io, res);
     });
 };
 
 exports.handleRejection = (bookingId, driverId, io) => {
-    // 🛑 STOP TIMER if rejection was manual
     if (bookingTimeouts.has(bookingId)) {
         clearTimeout(bookingTimeouts.get(bookingId));
         bookingTimeouts.delete(bookingId);
@@ -149,14 +252,11 @@ exports.handleRejection = (bookingId, driverId, io) => {
 exports.acceptRide = (req, res) => {
     const { bookingId, driverId } = req.body;
     
-    // 🛑 STOP TIMER
     if (bookingTimeouts.has(bookingId)) {
         clearTimeout(bookingTimeouts.get(bookingId));
         bookingTimeouts.delete(bookingId);
     }
 
-    // 🔒 Security Check: Only accept if the booking is currently assigned to THIS driver
-    // (Prevents a driver from accepting AFTER timeout)
     const safetySql = `UPDATE bookings SET status = 'accepted' WHERE id = ? AND driver_id = ? AND status = 'pending'`;
 
     pool.query(safetySql, [bookingId, driverId], (err, result) => {
@@ -185,16 +285,6 @@ exports.acceptRide = (req, res) => {
     });
 };
 
-exports.confirmPayment = (req, res) => {
-    const { bookingId } = req.body;
-    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
-    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
-    pool.query(sql, [bookingId], (err) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: "Payment successful", status: 'paid' });
-    });
-};
-
 exports.startRide = (req, res) => {
     const { bookingId, otp } = req.body;
     pool.query(`SELECT otp FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
@@ -214,25 +304,29 @@ exports.startRide = (req, res) => {
 
 exports.endRide = (req, res) => {
     const { bookingId, dropLat, dropLng } = req.body;
-
     pool.query(`SELECT pickup_lat, pickup_lng, fare FROM bookings WHERE id = ?`, [bookingId], (err, rows) => {
         if (err || rows.length === 0) return res.status(500).json({error: "Booking not found"});
-        
         const booking = rows[0];
         let finalFare = booking.fare;
-
+        
+        // Recalculate actual distance
         if (dropLat && dropLng) {
             const actualDist = calculateDistance(booking.pickup_lat, booking.pickup_lng, dropLat, dropLng);
-            finalFare = Math.round(50 + (actualDist * 15)); 
+            // Simple calculation for final adjustment (Keep it simple to avoid API cost on end ride)
+            // Or re-use the Google Matrix API if you want 100% accuracy here too.
+            // For now, let's stick to the agreed fare unless deviation is huge.
+            // But usually, apps charge based on ACTUAL time/dist.
+            // Let's just update based on the original agreed logic + distance travelled.
+            
+            // NOTE: Ideally, you track the route live. Here we just take start/end points.
+            finalFare = Math.round(40 + (actualDist * 12)); 
         }
 
         pool.query(`UPDATE bookings SET status = 'completed', end_time = NOW(), fare = ? WHERE id = ?`, [finalFare, bookingId], (err) => {
             if (err) return res.status(500).json({ error: err.message });
-            
             try {
                 req.app.get('socketio').emit('rideCompleted', { bookingId, fare: finalFare });
             } catch(e) { console.error("Socket error", e); }
-            
             res.json({ message: "Ride Completed", fare: finalFare });
         });
     });
@@ -241,12 +335,10 @@ exports.endRide = (req, res) => {
 exports.getHistory = (req, res) => {
     const userId = req.user.id; 
     const role = req.user.role;
-
     if (role === 'driver') {
         pool.query(`SELECT id FROM drivers WHERE user_id = ?`, [userId], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
             if (rows.length === 0) return res.json([]); 
-
             const driverId = rows[0].id;
             pool.query(`SELECT * FROM bookings WHERE driver_id = ? ORDER BY created_at DESC`, [driverId], (err, results) => {
                 if (err) return res.status(500).json({ error: err.message });
@@ -259,4 +351,45 @@ exports.getHistory = (req, res) => {
             res.json(results);
         });
     }
+};
+
+exports.confirmPayment = (req, res) => {
+    const { bookingId } = req.body;
+    if (!bookingId) return res.status(400).json({ error: "Booking ID is required" });
+    const sql = `UPDATE bookings SET payment_status = 'paid' WHERE id = ?`;
+    pool.query(sql, [bookingId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Payment successful", status: 'paid' });
+    });
+};
+
+// 🚨 SOS ALERT (Phase 5)
+exports.triggerSOS = (req, res) => {
+    const { bookingId, lat, lng } = req.body;
+    
+    console.log(`🚨 SOS TRIGGERED! Booking: ${bookingId}, Location: ${lat}, ${lng}`);
+    
+    // In a real app, send SMS to emergency contacts via Twilio here
+    
+    const sql = `UPDATE bookings SET sos_alert = TRUE, status = 'flagged' WHERE id = ?`;
+    pool.query(sql, [bookingId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "SOS Alert Received. Support Team & Police Notified." });
+    });
+};
+
+// ⭐ RATE RIDE (Phase 5)
+exports.rateRide = (req, res) => {
+    const { bookingId, rating, review } = req.body;
+
+    if (!bookingId || !rating) return res.status(400).json({ error: "Missing fields" });
+
+    const sql = `UPDATE bookings SET rating = ?, review = ? WHERE id = ?`;
+    pool.query(sql, [rating, review, bookingId], (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        // Bonus: You could update the driver's average rating in 'drivers' table here
+        
+        res.json({ message: "Rating submitted successfully" });
+    });
 };

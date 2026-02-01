@@ -1,4 +1,3 @@
-// backend/server.js
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -7,7 +6,8 @@ const cors = require('cors');
 const pool = require('./config/db');
 const authRoutes = require('./routes/auth');
 const bookingRoutes = require('./routes/bookings');
-const bookingController = require('./controllers/bookingController');
+const paymentRoutes = require('./routes/payments');
+const bookingController = require('./controllers/bookingController'); // Import Controller
 
 const app = express();
 app.use(cors());
@@ -21,7 +21,6 @@ const io = new Server(server, {
 app.set('socketio', io);
 
 // --- 🌍 GLOBAL STATE (SOCKETS ONLY) ---
-// We only keep track of WHO is connected, not WHERE they are.
 global.driverSockets = new Map(); // driverId -> socketId
 global.riderSockets = new Map();  // riderId -> socketId
 
@@ -35,6 +34,7 @@ pool.getConnection((err, connection) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/payments', paymentRoutes);
 
 // --- ⚡ SOCKET LOGIC ---
 io.on('connection', (socket) => {
@@ -44,7 +44,7 @@ io.on('connection', (socket) => {
     socket.on('driverLocation', (data) => {
         if (!data.driverId) return;
 
-        // A. Update Socket Map (So we can find them later)
+        // A. Update Socket Map
         global.driverSockets.set(data.driverId, socket.id);
         
         // B. Update Database (Persistent Storage)
@@ -53,7 +53,7 @@ io.on('connection', (socket) => {
             if (err) console.error("Location Update Error:", err.message);
         });
 
-        // C. Broadcast to Riders (for live tracking on map)
+        // C. Broadcast to Riders
         io.emit('driverMoved', {
             driverId: data.driverId,
             lat: parseFloat(data.lat),
@@ -67,16 +67,14 @@ io.on('connection', (socket) => {
         console.log(`👤 Rider ${userId} Joined`);
     });
 
-    // 3. Driver Joins (Explicit Join)
-    socket.on('joinDriver', (driverId) => {
-        global.driverSockets.set(driverId, socket.id);
-        console.log(`🚖 Driver ${driverId} Joined`);
+    // 3. Driver Declines Ride (Phase 1 Update)
+    socket.on('declineRide', (data) => {
+        console.log(`❌ Driver ${data.driverId} declined Booking ${data.bookingId}`);
+        bookingController.handleRejection(data.bookingId, data.driverId, io);
     });
 
     // 4. Disconnect
     socket.on('disconnect', () => {
-        // Optional: You could mark driver as 'offline' in DB here if you wanted strict tracking
-        // For now, we just remove their socket connection
         for (let [key, value] of global.driverSockets.entries()) {
             if (value === socket.id) {
                 global.driverSockets.delete(key);
@@ -84,13 +82,6 @@ io.on('connection', (socket) => {
                 break;
             }
         }
-    });
-
-    // 5. Driver Declines Ride
-    socket.on('declineRide', (data) => {
-        // data = { bookingId, driverId }
-        console.log(`❌ Driver ${data.driverId} declined Booking ${data.bookingId}`);
-        bookingController.handleRejection(data.bookingId, data.driverId, io);
     });
 });
 
