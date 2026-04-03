@@ -7,7 +7,8 @@ const pool = require('./config/db');
 const authRoutes = require('./routes/auth');
 const bookingRoutes = require('./routes/bookings');
 const paymentRoutes = require('./routes/payments');
-const bookingController = require('./controllers/bookingController'); // Import Controller
+const bookingController = require('./controllers/bookingController');
+const { ensureSchema } = require('./utils/ensureSchema');
 
 const app = express();
 app.use(cors());
@@ -15,70 +16,63 @@ app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
 app.set('socketio', io);
 
-// --- 🌍 GLOBAL STATE (SOCKETS ONLY) ---
-global.driverSockets = new Map(); // driverId -> socketId
-global.riderSockets = new Map();  // riderId -> socketId
+global.driverSockets = new Map();
+global.riderSockets = new Map();
 
 pool.getConnection((err, connection) => {
-    if (err) console.error('❌ Database Connection Failed:', err.message);
-    else {
-        console.log('✅ Connected to Cloud MySQL Database!');
-        connection.release();
+    if (err) {
+        console.error('Database connection failed:', err.message);
+        return;
     }
+
+    console.log('Connected to Cloud MySQL database.');
+    connection.release();
 });
 
 app.use('/api/auth', authRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/payments', paymentRoutes);
 
-// --- ⚡ SOCKET LOGIC ---
 io.on('connection', (socket) => {
-    console.log(`⚡ New Connection: ${socket.id}`);
+    console.log(`Socket connected: ${socket.id}`);
 
-    // 1. Driver Comes Online / Moves
     socket.on('driverLocation', (data) => {
         if (!data.driverId) return;
 
-        // A. Update Socket Map
         global.driverSockets.set(data.driverId, socket.id);
-        
-        // B. Update Database (Persistent Storage)
+
         const sql = `UPDATE drivers SET lat = ?, lng = ?, status = 'online' WHERE id = ?`;
         pool.query(sql, [data.lat, data.lng, data.driverId], (err) => {
-            if (err) console.error("Location Update Error:", err.message);
+            if (err) console.error('Location update error:', err.message);
         });
 
-        // C. Broadcast to Riders
         io.emit('driverMoved', {
             driverId: data.driverId,
             lat: parseFloat(data.lat),
-            lng: parseFloat(data.lng)
+            lng: parseFloat(data.lng),
         });
     });
 
-    // 2. Rider Joins
     socket.on('joinRider', (userId) => {
         global.riderSockets.set(userId, socket.id);
-        console.log(`👤 Rider ${userId} Joined`);
+        console.log(`Rider ${userId} joined`);
     });
 
-    // 3. Driver Declines Ride (Phase 1 Update)
     socket.on('declineRide', (data) => {
-        console.log(`❌ Driver ${data.driverId} declined Booking ${data.bookingId}`);
+        console.log(`Driver ${data.driverId} declined booking ${data.bookingId}`);
         bookingController.handleRejection(data.bookingId, data.driverId, io);
     });
 
-    // 4. Disconnect
     socket.on('disconnect', () => {
-        for (let [key, value] of global.driverSockets.entries()) {
+        for (const [key, value] of global.driverSockets.entries()) {
             if (value === socket.id) {
                 global.driverSockets.delete(key);
-                console.log(`❌ Driver ${key} Socket Disconnected`);
+                console.log(`Driver ${key} socket disconnected`);
                 break;
             }
         }
@@ -86,6 +80,12 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-});
+
+const startServer = async () => {
+    await ensureSchema();
+    server.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+};
+
+startServer();

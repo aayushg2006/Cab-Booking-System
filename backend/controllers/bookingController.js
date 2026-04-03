@@ -1,5 +1,4 @@
 const pool = require('../config/db');
-const { sendPushNotification } = require('../utils/pushService'); 
 const { getTrafficData } = require('../utils/mapsService'); 
 
 // ⏳ TIMEOUT MANAGER
@@ -61,7 +60,7 @@ const startBookingTimer = (bookingId, driverId, io) => {
     bookingTimeouts.set(bookingId, timer);
 };
 
-// Helper: Find Next Driver (SQL Spatial Query + Push Notification)
+// Helper: Find Next Driver (SQL Spatial Query + Socket Notification)
 const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds, io, res = null) => {
     // 🟢 FIX: Parse rejected_drivers if it's a JSON string
     let parsedExcludedIds = excludedDriverIds;
@@ -78,12 +77,10 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
         parsedExcludedIds = [];
     }
 
-    // JOIN with users table to get 'push_token'
     let query = `
-        SELECT d.id, d.lat, d.lng, u.push_token, 
+        SELECT d.id, d.lat, d.lng,
         ( 6371 * acos( cos( radians(?) ) * cos( radians( d.lat ) ) * cos( radians( d.lng ) - radians(?) ) + sin( radians(?) ) * sin( radians( d.lat ) ) ) ) AS distance 
         FROM drivers d
-        JOIN users u ON d.user_id = u.id
         WHERE d.status = 'online' 
     `;
 
@@ -150,16 +147,6 @@ const findAndNotifyDriver = (bookingId, pickupLat, pickupLng, excludedDriverIds,
                     startBookingTimer(bookingId, nextDriver.id, io);
                 }
 
-                // 2. 🔔 SEND EXPO PUSH NOTIFICATION (If App is Background/Closed)
-                if (nextDriver.push_token) {
-                    console.log(`🔔 Sending Push to Driver ${nextDriver.id}`);
-                    
-                    sendPushNotification(
-                        nextDriver.push_token,
-                        `New ride available! Fare: ₹${booking.fare}`,
-                        { bookingId: booking.id, type: 'ride_request' }
-                    );
-                }
             });
 
             if (res) res.json({ message: "Request sent to next driver", driverId: nextDriver.id });

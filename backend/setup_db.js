@@ -5,9 +5,11 @@ const createTables = `
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         email VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
         phone VARCHAR(20),
         role ENUM('rider', 'driver') NOT NULL,
+        profile_image VARCHAR(500) DEFAULT NULL,
+        push_token VARCHAR(255) DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -36,7 +38,13 @@ const createTables = `
         drop_address VARCHAR(255),
         fare DECIMAL(10, 2),
         status ENUM('pending', 'accepted', 'ongoing', 'completed', 'cancelled') DEFAULT 'pending',
+        payment_status ENUM('pending', 'paid') DEFAULT 'pending',
+        payment_mode ENUM('cash', 'online') DEFAULT 'cash',
         otp VARCHAR(6),
+        rejected_drivers JSON DEFAULT NULL,
+        rating TINYINT DEFAULT NULL,
+        review TEXT DEFAULT NULL,
+        sos_alert BOOLEAN DEFAULT FALSE,
         start_time DATETIME DEFAULT NULL,
         end_time DATETIME DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -45,11 +53,12 @@ const createTables = `
     );
 `;
 
-pool.query(createTables, (err, results) => {
+pool.query(createTables, (err) => {
     if (err) {
-        console.error("❌ Error creating tables:", err);
-    } else {
-        console.log("✅ Tables created successfully (with start_time & end_time)!");
+        console.error('Error creating tables:', err.message);
+        process.exit(1);
     }
-    process.exit();
+
+    console.log('Tables created/validated successfully.');
+    process.exit(0);
 });
