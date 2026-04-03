@@ -1,11 +1,9 @@
 import React, { createContext, useState, useEffect, useContext } from 'react';
 import io from 'socket.io-client';
 import { AuthContext } from './AuthContext';
+import { SERVER_URL } from '../api/client';
 
 export const SocketContext = createContext();
-
-// 🟢 FIX: Use Env Variable first, fallback to Localhost (Update the fallback to your PC IP)
-const SOCKET_URL = process.env.EXPO_PUBLIC_SERVER_URL || 'http://192.168.1.109:3000';
 
 export const SocketProvider = ({ children }) => {
   const { userToken, userInfo } = useContext(AuthContext);
@@ -14,31 +12,29 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     if (userToken && userInfo) {
-      console.log(`🔌 Connecting to Socket at: ${SOCKET_URL}`);
+      console.log(`[SOCKET] Connecting to: ${SERVER_URL}`);
 
-      // 1. Initialize Socket
-      const newSocket = io(SOCKET_URL, {
-        transports: ['websocket'], // ⚠️ CRITICAL for Android
+      const newSocket = io(SERVER_URL, {
+        transports: ['websocket'],
         reconnection: true,
         reconnectionAttempts: 5,
       });
 
       newSocket.on('connect', () => {
-        console.log('✅ Socket Connected! ID:', newSocket.id);
+        console.log('Socket connected:', newSocket.id);
         setOnline(true);
-        
-        // 2. Identify User Type immediately
+
         if (userInfo.role === 'rider') {
-           newSocket.emit('joinRider', userInfo.id);
+          newSocket.emit('joinRider', userInfo.id);
         }
       });
 
       newSocket.on('connect_error', (err) => {
-        console.log('❌ Socket Connection Error:', err.message);
+        console.log('Socket connection error:', err.message);
       });
 
       newSocket.on('disconnect', () => {
-        console.log('❌ Socket Disconnected');
+        console.log('Socket disconnected');
         setOnline(false);
       });
 

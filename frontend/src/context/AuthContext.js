@@ -3,7 +3,6 @@ import React, { createContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import client from '../api/client';
 import { Alert } from 'react-native';
-import { registerForPushNotificationsAsync } from '../api/notificationHelper';
 
 export const AuthContext = createContext();
 
@@ -15,16 +14,17 @@ export const AuthProvider = ({ children }) => {
   const isLoggedIn = async () => {
     try {
       setIsLoading(true);
-      let userToken = await AsyncStorage.getItem('userToken');
-      let userInfo = await AsyncStorage.getItem('userInfo');
-      
-      if (userToken) {
-        setUserToken(userToken);
-        setUserInfo(JSON.parse(userInfo));
+      const storedToken = await AsyncStorage.getItem('userToken');
+      const storedUser = await AsyncStorage.getItem('userInfo');
+
+      if (storedToken && storedUser) {
+        setUserToken(storedToken);
+        setUserInfo(JSON.parse(storedUser));
       }
-      setIsLoading(false);
     } catch (e) {
-      console.log(`Log in error ${e}`);
+      console.log('Auth bootstrap error:', e?.message || e);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -32,66 +32,62 @@ export const AuthProvider = ({ children }) => {
     isLoggedIn();
   }, []);
 
-const login = async (email, password) => {
+  const login = async (email, password) => {
     setIsLoading(true);
     try {
-      // 🔔 1. Get Push Token
-      const pushToken = await registerForPushNotificationsAsync();
+      const res = await client.post('/auth/login', { email, password });
 
-      // 🔔 2. Send token with credentials
-      const res = await client.post('/auth/login', { 
-          email, 
-          password,
-          pushToken // <--- Sending to Backend
-      });
-      
-      let user = res.data.user;
-      if (user.role === 'driver' && !user.driverId) user.driverId = user.id;
+      const user = res.data.user;
+      if (user.role === 'driver' && !user.driverId) {
+        user.driverId = user.id;
+      }
 
       setUserInfo(user);
       setUserToken(res.data.token);
 
-      AsyncStorage.setItem('userToken', res.data.token);
-      AsyncStorage.setItem('userInfo', JSON.stringify(user));
-
+      await AsyncStorage.setItem('userToken', res.data.token);
+      await AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
-      console.log('Login Failed:', e);
-      Alert.alert('Login Failed', e.response?.data?.error || 'Something went wrong');
+      console.log('Login failed:', e?.response?.data || e?.message || e);
+      Alert.alert('Login Failed', e?.response?.data?.error || 'Something went wrong');
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
-const register = async (userData) => {
+  const register = async (userData) => {
     setIsLoading(true);
     try {
-        // 🔔 1. Get Push Token
-        const pushToken = await registerForPushNotificationsAsync();
+      const res = await client.post('/auth/register', userData);
 
-        // 🔔 2. Send token with registration data
-        const res = await client.post('/auth/register', {
-            ...userData,
-            pushToken // <--- Sending to Backend
-        });
+      const user = res.data.user;
+      if (user.role === 'driver' && !user.driverId) {
+        user.driverId = user.id;
+      }
 
-        let user = res.data.user;
-        if (user.role === 'driver' && !user.driverId) user.driverId = user.id;
+      setUserInfo(user);
+      setUserToken(res.data.token);
 
-        setUserInfo(user);
-        setUserToken(res.data.token);
-        AsyncStorage.setItem('userToken', res.data.token);
-        AsyncStorage.setItem('userInfo', JSON.stringify(user));
+      await AsyncStorage.setItem('userToken', res.data.token);
+      await AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
-        Alert.alert('Registration Failed', e.response?.data?.error || 'Error');
+      console.log('Registration failed:', e?.response?.data || e?.message || e);
+      Alert.alert('Registration Failed', e?.response?.data?.error || 'Error');
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
-  const logout = () => {
+  const logout = async () => {
     setIsLoading(true);
-    setUserToken(null);
-    AsyncStorage.removeItem('userToken');
-    AsyncStorage.removeItem('userInfo');
-    setIsLoading(false);
+    try {
+      setUserToken(null);
+      setUserInfo(null);
+      await AsyncStorage.removeItem('userToken');
+      await AsyncStorage.removeItem('userInfo');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
