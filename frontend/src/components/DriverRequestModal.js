@@ -19,6 +19,27 @@ const DriverRequestModal = ({ visible, request, onAccept, onReject }) => {
             
             <Text style={styles.label}>FARE</Text>
             <Text style={styles.fare}>₹{request.fare}</Text>
+
+            {!!request.scheduledFor && (
+              <Text style={styles.meta}>Scheduled: {new Date(request.scheduledFor).toLocaleString()}</Text>
+            )}
+            {!!request.promoCode && (
+              <Text style={styles.meta}>Promo: {request.promoCode} (-₹{Math.round(request.discountAmount || 0)})</Text>
+            )}
+
+            {Array.isArray(request.ridePreferences) && request.ridePreferences.length > 0 && (
+              <View style={styles.prefBox}>
+                <Text style={styles.prefTitle}>Rider Preferences</Text>
+                <Text style={styles.prefText}>{request.ridePreferences.join(', ')}</Text>
+              </View>
+            )}
+
+            {!!request.specialInstructions && (
+              <View style={styles.prefBox}>
+                <Text style={styles.prefTitle}>Note</Text>
+                <Text style={styles.prefText}>{request.specialInstructions}</Text>
+              </View>
+            )}
             
             {request.surgeMultiplier > 1 && (
                  <Text style={styles.surge}>⚡ Surge {request.surgeMultiplier}x Active</Text>
@@ -47,6 +68,10 @@ const styles = StyleSheet.create({
   label: { color: '#888', fontSize: 10, fontWeight: 'bold', letterSpacing: 1 },
   address: { color: 'white', fontSize: 16, fontWeight: 'bold', marginBottom: 5 },
   fare: { color: colors.success, fontSize: 24, fontWeight: 'bold' },
+  meta: { color: '#B9C2D8', fontSize: 12, marginTop: 4 },
+  prefBox: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#3A4255' },
+  prefTitle: { color: '#A3ADC5', fontSize: 10, fontWeight: '700', letterSpacing: 0.8 },
+  prefText: { color: '#E0E5F2', fontSize: 12, marginTop: 2 },
   surge: { color: '#FFD700', fontWeight: 'bold', marginTop: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between' },
   rejectBtn: { flex: 1, backgroundColor: '#333', padding: 18, borderRadius: 12, marginRight: 10, alignItems: 'center' },

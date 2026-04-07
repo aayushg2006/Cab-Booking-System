@@ -1,6 +1,6 @@
 import React, { useContext, useState } from 'react';
 import { 
-  View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, 
+  View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator, Alert,
   KeyboardAvoidingView, Platform, ScrollView 
 } from 'react-native';
 import { AuthContext } from '../context/AuthContext';
@@ -17,15 +17,31 @@ const RegisterScreen = ({ navigation }) => {
   const [role, setRole] = useState('rider'); // 'rider' or 'driver'
 
   // Driver Specific
+  const [carType, setCarType] = useState('sedan');
   const [carModel, setCarModel] = useState('');
   const [plate, setPlate] = useState('');
   const [license, setLicense] = useState('');
 
   const handleRegister = () => {
+    if (!name || !email || !phone || !password) {
+      Alert.alert('Missing Fields', 'Please fill all required fields.');
+      return;
+    }
+
+    if (role === 'driver' && (!carType || !carModel || !plate || !license)) {
+      Alert.alert('Missing Vehicle Details', 'Please add car type, model, plate and license number.');
+      return;
+    }
+
     const userData = {
         name, email, phone, password, role,
         // Only include these if driver
-        ...(role === 'driver' && { car_model: carModel, car_plate: plate, license_number: license })
+        ...(role === 'driver' && { 
+          car_type: carType, 
+          car_model: carModel, 
+          car_plate: plate, 
+          license_number: license 
+        })
     };
     register(userData);
   };
@@ -70,6 +86,27 @@ const RegisterScreen = ({ navigation }) => {
           {role === 'driver' && (
             <>
                 <Text style={styles.sectionHeader}>VEHICLE DETAILS</Text>
+                <Text style={styles.label}>CAR TYPE</Text>
+                <View style={styles.carTypeContainer}>
+                  <TouchableOpacity
+                    style={[styles.carTypeBtn, carType === 'hatchback' && styles.carTypeBtnActive]}
+                    onPress={() => setCarType('hatchback')}
+                  >
+                    <Text style={[styles.carTypeText, carType === 'hatchback' && styles.carTypeTextActive]}>Mini</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.carTypeBtn, carType === 'sedan' && styles.carTypeBtnActive]}
+                    onPress={() => setCarType('sedan')}
+                  >
+                    <Text style={[styles.carTypeText, carType === 'sedan' && styles.carTypeTextActive]}>Sedan</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.carTypeBtn, carType === 'suv' && styles.carTypeBtnActive]}
+                    onPress={() => setCarType('suv')}
+                  >
+                    <Text style={[styles.carTypeText, carType === 'suv' && styles.carTypeTextActive]}>SUV</Text>
+                  </TouchableOpacity>
+                </View>
                 <TextInput style={styles.input} placeholder="Car Model (e.g. Toyota Prius)" placeholderTextColor="#555" onChangeText={setCarModel} />
                 <TextInput style={styles.input} placeholder="License Plate" placeholderTextColor="#555" onChangeText={setPlate} />
                 <TextInput style={styles.input} placeholder="License Number" placeholderTextColor="#555" onChangeText={setLicense} />
@@ -104,7 +141,23 @@ const styles = StyleSheet.create({
   roleBtn: { flex: 1, padding: 12, alignItems: 'center', borderRadius: 8 },
   roleBtnActive: { backgroundColor: colors.primary },
   roleText: { color: '#888', fontWeight: 'bold' },
-  sectionHeader: { color: colors.text, marginTop: 20, marginBottom: 10, fontSize: 16, fontWeight: 'bold' }
+  sectionHeader: { color: colors.text, marginTop: 20, marginBottom: 10, fontSize: 16, fontWeight: 'bold' },
+  carTypeContainer: { flexDirection: 'row', marginBottom: 10, gap: 8 },
+  carTypeBtn: {
+    flex: 1,
+    backgroundColor: '#222',
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#333'
+  },
+  carTypeBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary
+  },
+  carTypeText: { color: '#aaa', fontWeight: 'bold' },
+  carTypeTextActive: { color: 'black' }
 });
 
 export default RegisterScreen;

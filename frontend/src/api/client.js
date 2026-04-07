@@ -1,7 +1,7 @@
 import axios from 'axios';
 import Constants from 'expo-constants';
 
-const DEFAULT_BACKEND_PORT = process.env.EXPO_PUBLIC_SERVER_PORT || '4000';
+const DEFAULT_BACKEND_PORT = process.env.EXPO_PUBLIC_SERVER_PORT || '3000';
 
 const stripApiSuffix = (url) => {
   if (!url) return null;
@@ -19,7 +19,7 @@ const deriveServerUrlFromExpoHost = () => {
   if (!hostUri) return null;
 
   const host = hostUri.split(':')[0];
-  if (!host) return null;git 
+  if (!host) return null;
 
   return `http://${host}:${DEFAULT_BACKEND_PORT}`;
 };

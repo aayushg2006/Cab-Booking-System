@@ -39,7 +39,7 @@ export const AuthProvider = ({ children }) => {
 
       const user = res.data.user;
       if (user.role === 'driver' && !user.driverId) {
-        user.driverId = user.id;
+        throw new Error('Driver profile missing. Please contact support or re-register as driver.');
       }
 
       setUserInfo(user);
@@ -49,7 +49,7 @@ export const AuthProvider = ({ children }) => {
       await AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
       console.log('Login failed:', e?.response?.data || e?.message || e);
-      Alert.alert('Login Failed', e?.response?.data?.error || 'Something went wrong');
+      Alert.alert('Login Failed', e?.response?.data?.error || e?.message || 'Something went wrong');
     } finally {
       setIsLoading(false);
     }
@@ -62,7 +62,7 @@ export const AuthProvider = ({ children }) => {
 
       const user = res.data.user;
       if (user.role === 'driver' && !user.driverId) {
-        user.driverId = user.id;
+        throw new Error('Driver profile was not created. Please try again.');
       }
 
       setUserInfo(user);
@@ -72,7 +72,7 @@ export const AuthProvider = ({ children }) => {
       await AsyncStorage.setItem('userInfo', JSON.stringify(user));
     } catch (e) {
       console.log('Registration failed:', e?.response?.data || e?.message || e);
-      Alert.alert('Registration Failed', e?.response?.data?.error || 'Error');
+      Alert.alert('Registration Failed', e?.response?.data?.error || e?.message || 'Error');
     } finally {
       setIsLoading(false);
     }

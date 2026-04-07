@@ -37,8 +37,8 @@ async function seed() {
 
                     // 4. Create the Driver Profile (Links to User)
                     connection.query(
-                        `INSERT INTO drivers (user_id, license_number, car_model, car_plate, is_online) VALUES (?, ?, ?, ?, ?)`,
-                        [userId, 'MH-02-AB-1234', 'Toyota Etios', 'MH02AB1234', true],
+                        `INSERT INTO drivers (user_id, car_type, license_number, car_model, car_plate, status) VALUES (?, ?, ?, ?, ?, ?)`,
+                        [userId, 'sedan', 'MH-02-AB-1234', 'Toyota Etios', 'MH02AB1234', 'online'],
                         (err, resDriver) => {
                             if (err) console.log('⚠️ Driver profile might already exist');
                             

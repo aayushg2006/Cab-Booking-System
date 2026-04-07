@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret';
+const VALID_CAR_TYPES = new Set(['hatchback', 'sedan', 'suv']);
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, JWT_SECRET, { expiresIn: '30d' });
@@ -35,7 +36,7 @@ const insertUser = async ({ name, email, phone, hashedPassword, role }) => {
 };
 
 exports.register = async (req, res) => {
-    const { name, email, phone, password, role, car_model, car_plate, license_number } = req.body;
+    const { name, email, phone, password, role, car_model, car_plate, license_number, car_type } = req.body;
 
     if (!name || !email || !password || !phone) {
         return res.status(400).json({ error: 'Please provide all required fields' });
@@ -43,6 +44,11 @@ exports.register = async (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
     const normalizedRole = role || 'rider';
+    const normalizedCarType = car_type ? String(car_type).trim().toLowerCase() : null;
+
+    if (normalizedRole === 'driver' && !VALID_CAR_TYPES.has(normalizedCarType)) {
+        return res.status(400).json({ error: 'Driver car_type must be one of: hatchback, sedan, suv' });
+    }
 
     try {
         const [existingUsers] = await pool
@@ -69,8 +75,8 @@ exports.register = async (req, res) => {
 
         if (normalizedRole === 'driver') {
             const [driverResult] = await pool.promise().query(
-                `INSERT INTO drivers (user_id, car_model, car_plate, license_number, status) VALUES (?, ?, ?, ?, 'offline')`,
-                [userId, car_model || 'Unknown', car_plate || 'Unknown', license_number || 'Unknown']
+                `INSERT INTO drivers (user_id, car_type, car_model, car_plate, license_number, status) VALUES (?, ?, ?, ?, ?, 'offline')`,
+                [userId, normalizedCarType, car_model || 'Unknown', car_plate || 'Unknown', license_number || 'Unknown']
             );
             newDriverId = driverResult.insertId;
         }
@@ -83,6 +89,7 @@ exports.register = async (req, res) => {
                 email: normalizedEmail,
                 role: normalizedRole,
                 driverId: newDriverId,
+                carType: normalizedRole === 'driver' ? normalizedCarType : null,
             },
             token: generateToken(userId, normalizedRole),
         });
@@ -117,7 +124,10 @@ exports.login = async (req, res) => {
 
         let driverInfo = null;
         if (user.role === 'driver') {
-            const [drivers] = await pool.promise().query('SELECT id FROM drivers WHERE user_id = ?', [user.id]);
+            const [drivers] = await pool.promise().query(
+                'SELECT id, car_type, car_model, car_plate, status FROM drivers WHERE user_id = ?',
+                [user.id]
+            );
             if (drivers.length > 0) driverInfo = drivers[0];
         }
 
@@ -129,6 +139,9 @@ exports.login = async (req, res) => {
                 email: user.email,
                 role: user.role,
                 driverId: driverInfo ? driverInfo.id : null,
+                carType: driverInfo ? driverInfo.car_type : null,
+                carModel: driverInfo ? driverInfo.car_model : null,
+                carPlate: driverInfo ? driverInfo.car_plate : null,
             },
             token: generateToken(user.id, user.role),
         });

@@ -16,6 +16,7 @@ const createTables = `
     CREATE TABLE IF NOT EXISTS drivers (
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
+        car_type ENUM('hatchback', 'sedan', 'suv') DEFAULT 'sedan',
         car_model VARCHAR(50),
         car_plate VARCHAR(20),
         license_number VARCHAR(50),
@@ -40,16 +41,71 @@ const createTables = `
         status ENUM('pending', 'accepted', 'ongoing', 'completed', 'cancelled') DEFAULT 'pending',
         payment_status ENUM('pending', 'paid') DEFAULT 'pending',
         payment_mode ENUM('cash', 'online') DEFAULT 'cash',
+        car_type ENUM('hatchback', 'sedan', 'suv') DEFAULT 'sedan',
         otp VARCHAR(6),
         rejected_drivers JSON DEFAULT NULL,
         rating TINYINT DEFAULT NULL,
         review TEXT DEFAULT NULL,
         sos_alert BOOLEAN DEFAULT FALSE,
+        cancellation_reason VARCHAR(255) DEFAULT NULL,
+        cancelled_by_role ENUM('rider', 'driver') DEFAULT NULL,
+        cancelled_at DATETIME DEFAULT NULL,
         start_time DATETIME DEFAULT NULL,
         end_time DATETIME DEFAULT NULL,
+        scheduled_for DATETIME DEFAULT NULL,
+        promo_code VARCHAR(40) DEFAULT NULL,
+        original_fare DECIMAL(10,2) DEFAULT NULL,
+        discount_amount DECIMAL(10,2) DEFAULT 0,
+        ride_preferences JSON DEFAULT NULL,
+        special_instructions VARCHAR(255) DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (rider_id) REFERENCES users(id),
         FOREIGN KEY (driver_id) REFERENCES drivers(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS saved_places (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        label VARCHAR(30) NOT NULL,
+        address VARCHAR(255) NOT NULL,
+        lat DECIMAL(10,8) NOT NULL,
+        lng DECIMAL(11,8) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_saved_place_user_label (user_id, label),
+        INDEX idx_saved_place_user (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS promotions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code VARCHAR(40) NOT NULL UNIQUE,
+        title VARCHAR(120) DEFAULT NULL,
+        description VARCHAR(255) DEFAULT NULL,
+        discount_type ENUM('flat', 'percent') NOT NULL DEFAULT 'flat',
+        discount_value DECIMAL(10,2) NOT NULL,
+        max_discount DECIMAL(10,2) DEFAULT NULL,
+        min_fare DECIMAL(10,2) DEFAULT 0,
+        usage_limit_total INT DEFAULT NULL,
+        usage_limit_per_user INT DEFAULT 1,
+        active BOOLEAN DEFAULT TRUE,
+        starts_at DATETIME DEFAULT NULL,
+        ends_at DATETIME DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS promotion_redemptions (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        promotion_id INT NOT NULL,
+        user_id INT NOT NULL,
+        booking_id INT DEFAULT NULL,
+        discount_amount DECIMAL(10,2) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_promo_redemption_promo_user (promotion_id, user_id),
+        INDEX idx_promo_redemption_booking (booking_id),
+        FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE SET NULL
     );
 `;
 
@@ -59,6 +115,31 @@ pool.query(createTables, (err) => {
         process.exit(1);
     }
 
-    console.log('Tables created/validated successfully.');
-    process.exit(0);
+    const seedPromotionsSql = `
+        INSERT INTO promotions
+            (code, title, description, discount_type, discount_value, max_discount, min_fare, usage_limit_total, usage_limit_per_user, active, starts_at, ends_at)
+        VALUES
+            ('WELCOME50', 'Welcome Offer', 'Flat discount for first trip', 'flat', 50, NULL, 120, NULL, 1, TRUE, NULL, NULL),
+            ('SAVE20', 'Save 20%', 'Percentage discount for everyday rides', 'percent', 20, 120, 200, NULL, 3, TRUE, NULL, NULL),
+            ('NIGHT100', 'Night Rider', 'Late evening flat discount', 'flat', 100, NULL, 250, NULL, 2, TRUE, NULL, NULL)
+        ON DUPLICATE KEY UPDATE
+            title = VALUES(title),
+            description = VALUES(description),
+            discount_type = VALUES(discount_type),
+            discount_value = VALUES(discount_value),
+            max_discount = VALUES(max_discount),
+            min_fare = VALUES(min_fare),
+            usage_limit_total = VALUES(usage_limit_total),
+            usage_limit_per_user = VALUES(usage_limit_per_user),
+            active = VALUES(active)
+    `;
+
+    pool.query(seedPromotionsSql, (seedErr) => {
+        if (seedErr) {
+            console.warn('Promotions seed warning:', seedErr.message);
+        }
+
+        console.log('Tables created/validated successfully.');
+        process.exit(0);
+    });
 });

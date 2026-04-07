@@ -1,5 +1,13 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, Image } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  ScrollView,
+  TextInput,
+} from 'react-native';
 import { colors } from '../theme/colors';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -9,11 +17,106 @@ const CAR_TYPES = [
   { id: 'suv', name: 'SUV', multiplier: 1.9, icon: 'bus' },
 ];
 
-const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) => {
-  const [selectedCar, setSelectedCar] = useState(CAR_TYPES[0]);
+const SCHEDULE_OPTIONS = [
+  { id: 'now', label: 'Now', offsetMinutes: 0 },
+  { id: '15', label: '+15m', offsetMinutes: 15 },
+  { id: '30', label: '+30m', offsetMinutes: 30 },
+];
 
-  // Calculate price based on selected car category
-  const displayFare = Math.round(fare * selectedCar.multiplier);
+const PREFERENCE_OPTIONS = [
+  { id: 'quiet_ride', label: 'Quiet Ride' },
+  { id: 'ac_required', label: 'AC Required' },
+  { id: 'pet_friendly', label: 'Pet Friendly' },
+  { id: 'extra_luggage', label: 'Extra Luggage' },
+];
+
+const RideRequestPanel = ({
+  fare,
+  distance,
+  duration,
+  onCancel,
+  onRequest,
+  onApplyPromo,
+  isSearching,
+}) => {
+  const [selectedCar, setSelectedCar] = useState(
+    CAR_TYPES.find((car) => car.id === 'sedan') || CAR_TYPES[0]
+  );
+  const [promoCodeInput, setPromoCodeInput] = useState('');
+  const [promoPreview, setPromoPreview] = useState(null);
+  const [promoLoading, setPromoLoading] = useState(false);
+  const [scheduleOptionId, setScheduleOptionId] = useState('now');
+  const [ridePreferences, setRidePreferences] = useState([]);
+  const [specialInstructions, setSpecialInstructions] = useState('');
+
+  useEffect(() => {
+    setPromoPreview(null);
+  }, [selectedCar.id, fare]);
+
+  const baseFare = useMemo(
+    () => Math.round(Number(fare || 0) * Number(selectedCar.multiplier || 1)),
+    [fare, selectedCar.multiplier]
+  );
+  const displayFare = useMemo(() => {
+    if (
+      promoPreview &&
+      promoPreview.promoCode === promoCodeInput.trim().toUpperCase() &&
+      promoPreview.carType === selectedCar.id
+    ) {
+      return Math.round(Number(promoPreview.finalFare || baseFare));
+    }
+    return baseFare;
+  }, [baseFare, promoCodeInput, promoPreview, selectedCar.id]);
+
+  const selectedSchedule = useMemo(
+    () => SCHEDULE_OPTIONS.find((item) => item.id === scheduleOptionId) || SCHEDULE_OPTIONS[0],
+    [scheduleOptionId]
+  );
+
+  const togglePreference = (preferenceId) => {
+    setRidePreferences((prev) => {
+      if (prev.includes(preferenceId)) {
+        return prev.filter((item) => item !== preferenceId);
+      }
+      return [...prev, preferenceId];
+    });
+  };
+
+  const applyPromoCode = async () => {
+    const promoCode = promoCodeInput.trim().toUpperCase();
+    if (!promoCode) return;
+    if (!onApplyPromo) return;
+
+    setPromoLoading(true);
+    try {
+      const promoResult = await onApplyPromo(promoCode, selectedCar.id);
+      if (!promoResult) {
+        setPromoPreview(null);
+        return;
+      }
+      setPromoPreview({
+        ...promoResult,
+        promoCode,
+        carType: selectedCar.id,
+      });
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleRequest = () => {
+    onRequest(selectedCar.id, displayFare, {
+      promoCode:
+        promoPreview &&
+        promoPreview.promoCode === promoCodeInput.trim().toUpperCase() &&
+        promoPreview.carType === selectedCar.id
+          ? promoPreview.promoCode
+          : null,
+      scheduleOffsetMinutes: selectedSchedule.offsetMinutes,
+      ridePreferences,
+      specialInstructions: specialInstructions.trim(),
+    });
+  };
 
   return (
     <View style={styles.panel}>
@@ -46,11 +149,106 @@ const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) 
         <Text style={styles.label}>Distance</Text>
         <Text style={styles.value}>{distance} km</Text>
       </View>
+      <View style={styles.row}>
+        <Text style={styles.label}>ETA</Text>
+        <Text style={styles.value}>{duration} min</Text>
+      </View>
+      <View style={styles.row}>
+        <Text style={styles.label}>Base Fare</Text>
+        <Text style={styles.value}>₹{baseFare}</Text>
+      </View>
+      {promoPreview && promoPreview.discountAmount > 0 && (
+        <View style={styles.row}>
+          <Text style={styles.label}>Promo Discount</Text>
+          <Text style={styles.discountText}>-₹{Math.round(promoPreview.discountAmount)}</Text>
+        </View>
+      )}
       
       <View style={styles.row}>
         <Text style={styles.label}>Total Fare</Text>
         <Text style={styles.price}>₹{displayFare}</Text>
       </View>
+
+      <View style={styles.divider} />
+
+      <Text style={styles.sectionTitle}>Schedule</Text>
+      <View style={styles.scheduleRow}>
+        {SCHEDULE_OPTIONS.map((option) => {
+          const selected = option.id === scheduleOptionId;
+          return (
+            <TouchableOpacity
+              key={option.id}
+              style={[styles.scheduleBtn, selected && styles.scheduleBtnActive]}
+              onPress={() => setScheduleOptionId(option.id)}
+            >
+              <Text style={[styles.scheduleText, selected && styles.scheduleTextActive]}>
+                {option.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <Text style={styles.sectionTitle}>Promo Code</Text>
+      <View style={styles.promoRow}>
+        <TextInput
+          value={promoCodeInput}
+          onChangeText={(text) => {
+            setPromoCodeInput(text);
+            if (!text.trim()) setPromoPreview(null);
+          }}
+          placeholder="WELCOME50"
+          placeholderTextColor="#7D8594"
+          autoCapitalize="characters"
+          style={styles.promoInput}
+          maxLength={20}
+        />
+        <TouchableOpacity
+          style={[styles.applyBtn, (!promoCodeInput.trim() || promoLoading) && styles.disabledBtn]}
+          onPress={applyPromoCode}
+          disabled={!promoCodeInput.trim() || promoLoading}
+        >
+          {promoLoading ? (
+            <ActivityIndicator size="small" color="black" />
+          ) : (
+            <Text style={styles.applyText}>Apply</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+      {promoPreview?.title &&
+      promoPreview.carType === selectedCar.id &&
+      promoPreview.promoCode === promoCodeInput.trim().toUpperCase() ? (
+        <Text style={styles.promoHint}>{promoPreview.title} applied</Text>
+      ) : (
+        <Text style={styles.promoHint}>Optional: use a promo code for discounts</Text>
+      )}
+
+      <Text style={styles.sectionTitle}>Ride Preferences</Text>
+      <View style={styles.prefWrap}>
+        {PREFERENCE_OPTIONS.map((option) => {
+          const selected = ridePreferences.includes(option.id);
+          return (
+            <TouchableOpacity
+              key={option.id}
+              style={[styles.prefChip, selected && styles.prefChipActive]}
+              onPress={() => togglePreference(option.id)}
+            >
+              <Text style={[styles.prefText, selected && styles.prefTextActive]}>{option.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      <Text style={styles.sectionTitle}>Note for Driver</Text>
+      <TextInput
+        value={specialInstructions}
+        onChangeText={setSpecialInstructions}
+        style={styles.instructionsInput}
+        placeholder="Pickup gate, landmark, etc."
+        placeholderTextColor="#7D8594"
+        maxLength={140}
+        multiline
+      />
 
       <View style={styles.buttons}>
         <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
@@ -59,8 +257,8 @@ const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) 
 
         <TouchableOpacity 
             style={styles.confirmBtn} 
-            onPress={() => onRequest(selectedCar.id, displayFare)} 
-            disabled={isSearching}
+            onPress={handleRequest}
+            disabled={isSearching || promoLoading}
         >
           {isSearching ? (
              <View style={{flexDirection:'row', alignItems:'center'}}>
@@ -78,8 +276,6 @@ const RideRequestPanel = ({ fare, distance, onCancel, onRequest, isSearching }) 
 
 const styles = StyleSheet.create({
   panel: {
-    // 🔴 REMOVED: position: 'absolute', bottom: 0 
-    // This allows the panel to sit BELOW the payment buttons naturally
     width: '100%',
     backgroundColor: colors.secondary, 
     borderTopLeftRadius: 20, 
@@ -109,7 +305,78 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginBottom: 10 },
   label: { color: colors.textDim, fontSize: 16 },
   value: { color: colors.text, fontSize: 16, fontWeight: 'bold' },
+  discountText: { color: colors.success, fontSize: 16, fontWeight: 'bold' },
   price: { color: colors.success, fontSize: 22, fontWeight: 'bold' },
+  sectionTitle: { alignSelf: 'flex-start', color: '#A7B2C8', fontSize: 12, fontWeight: 'bold', marginBottom: 8, marginTop: 4, letterSpacing: 0.6 },
+  scheduleRow: { width: '100%', flexDirection: 'row', gap: 8, marginBottom: 12 },
+  scheduleBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#3A465C',
+    borderRadius: 9,
+    paddingVertical: 8,
+    alignItems: 'center',
+    backgroundColor: '#273145',
+  },
+  scheduleBtnActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  scheduleText: { color: 'white', fontWeight: '700', fontSize: 12 },
+  scheduleTextActive: { color: 'black' },
+  promoRow: { width: '100%', flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  promoInput: {
+    flex: 1,
+    backgroundColor: '#242A35',
+    borderColor: '#3A4456',
+    borderWidth: 1,
+    borderRadius: 9,
+    color: 'white',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginRight: 8,
+    fontWeight: '600',
+  },
+  applyBtn: {
+    backgroundColor: colors.primary,
+    borderRadius: 9,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    minWidth: 70,
+    alignItems: 'center',
+  },
+  disabledBtn: { opacity: 0.6 },
+  applyText: { color: 'black', fontWeight: '800', fontSize: 12 },
+  promoHint: { alignSelf: 'flex-start', color: '#7D8594', fontSize: 11, marginBottom: 10 },
+  prefWrap: { width: '100%', flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  prefChip: {
+    backgroundColor: '#263044',
+    borderColor: '#374660',
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  prefChipActive: {
+    backgroundColor: '#2D6EEA',
+    borderColor: '#2D6EEA',
+  },
+  prefText: { color: '#D2D8E2', fontSize: 12, fontWeight: '600' },
+  prefTextActive: { color: 'white' },
+  instructionsInput: {
+    width: '100%',
+    minHeight: 52,
+    maxHeight: 90,
+    borderColor: '#374660',
+    borderWidth: 1,
+    borderRadius: 10,
+    backgroundColor: '#242A35',
+    color: 'white',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    textAlignVertical: 'top',
+    marginBottom: 10,
+  },
   buttons: { flexDirection: 'row', marginTop: 10, width: '100%', justifyContent: 'space-between' },
   cancelBtn: { flex: 1, backgroundColor: '#333', padding: 15, borderRadius: 10, marginRight: 10, alignItems: 'center' },
   confirmBtn: { flex: 2, backgroundColor: colors.primary, padding: 15, borderRadius: 10, alignItems: 'center' },

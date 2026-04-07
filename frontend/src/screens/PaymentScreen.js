@@ -1,4 +1,4 @@
-import React, { useState, useContext, useEffect } from 'react';
+import React, { useState, useContext } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Modal, SafeAreaView } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { colors } from '../theme/colors';
@@ -29,7 +29,7 @@ const PaymentScreen = ({ route, navigation }) => {
             Alert.alert("Success", "Cash Payment Confirmed!", [
                 { text: "OK", onPress: () => navigation.navigate('Map') }
             ]);
-        } catch (err) {
+        } catch (_err) {
             Alert.alert("Error", "Could not confirm payment.");
         } finally {
             setLoading(false);
@@ -124,7 +124,7 @@ const PaymentScreen = ({ route, navigation }) => {
               Alert.alert("Success", "Payment Verified!", [
                   { text: "OK", onPress: () => navigation.navigate('Map') }
               ]);
-          } catch (e) {
+          } catch (_e) {
               Alert.alert("Verification Failed", "Payment happened but verification failed.");
           } finally {
               setLoading(false);

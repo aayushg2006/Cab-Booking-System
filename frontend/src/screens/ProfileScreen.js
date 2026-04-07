@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { AuthContext } from '../context/AuthContext';
@@ -8,23 +8,37 @@ import { colors } from '../theme/colors';
 const ProfileScreen = ({ navigation }) => {
   const { userInfo, logout, userToken } = useContext(AuthContext);
   const [history, setHistory] = useState([]);
+  const [upcoming, setUpcoming] = useState([]);
+  const [earnings, setEarnings] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    fetchHistory();
-  }, []);
-
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     try {
       const res = await client.get('/bookings/history', {
          headers: { Authorization: `Bearer ${userToken}` }
       });
       setHistory(res.data);
+
+      if (userInfo.role === 'rider') {
+        const upcomingRes = await client.get('/bookings/upcoming', {
+          headers: { Authorization: `Bearer ${userToken}` },
+        });
+        setUpcoming(Array.isArray(upcomingRes.data) ? upcomingRes.data : []);
+      } else if (userInfo.role === 'driver') {
+        const earningsRes = await client.get('/bookings/driver/earnings?range=7d', {
+          headers: { Authorization: `Bearer ${userToken}` },
+        });
+        setEarnings(earningsRes.data || null);
+      }
     } catch (err) {
       console.log('Error fetching history:', err);
     }
     setLoading(false);
-  };
+  }, [userInfo.role, userToken]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
 
   const renderRide = ({ item }) => (
     <View style={styles.rideCard}>
@@ -59,6 +73,39 @@ const ProfileScreen = ({ navigation }) => {
       </View>
 
       {/* History List */}
+      {userInfo.role === 'driver' && earnings && (
+        <View style={styles.earningsCard}>
+          <Text style={styles.earningsTitle}>Last 7 Days</Text>
+          <View style={styles.row}>
+            <Text style={styles.earningsLabel}>Rides</Text>
+            <Text style={styles.earningsValue}>{earnings.completedRides}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.earningsLabel}>Earnings</Text>
+            <Text style={styles.earningsValue}>₹{Math.round(earnings.grossEarnings || 0)}</Text>
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.earningsLabel}>Avg Rating</Text>
+            <Text style={styles.earningsValue}>{earnings.avgRating || 0}</Text>
+          </View>
+        </View>
+      )}
+
+      {userInfo.role === 'rider' && upcoming.length > 0 && (
+        <View style={styles.upcomingBlock}>
+          <Text style={styles.sectionTitle}>Upcoming Rides</Text>
+          {upcoming.slice(0, 3).map((ride) => (
+            <View key={ride.bookingId} style={styles.upcomingCard}>
+              <Text style={styles.upcomingTime}>{new Date(ride.scheduledFor).toLocaleString()}</Text>
+              <Text style={styles.upcomingRoute} numberOfLines={1}>→ {ride.dropAddress || 'Destination'}</Text>
+              <Text style={styles.upcomingMeta}>
+                {ride.carType?.toUpperCase()} • ₹{Math.round(ride.fare || 0)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      )}
+
       <Text style={styles.sectionTitle}>Ride History</Text>
       {loading ? (
         <ActivityIndicator color={colors.primary} style={{marginTop: 20}} />
@@ -91,6 +138,15 @@ const styles = StyleSheet.create({
   roleBadge: { backgroundColor: colors.primary, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 5 },
   roleText: { color: 'black', fontWeight: 'bold', fontSize: 12 },
   sectionTitle: { fontSize: 18, color: 'white', marginBottom: 15, fontWeight: 'bold', borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 10 },
+  earningsCard: { backgroundColor: '#202838', borderWidth: 1, borderColor: '#34415C', borderRadius: 12, padding: 14, marginBottom: 16 },
+  earningsTitle: { color: '#D7E1F5', fontWeight: '800', marginBottom: 8, fontSize: 14 },
+  earningsLabel: { color: '#93A0B9', fontSize: 13 },
+  earningsValue: { color: '#E7EEFF', fontWeight: '700', fontSize: 13 },
+  upcomingBlock: { marginBottom: 18 },
+  upcomingCard: { backgroundColor: '#1F2736', borderWidth: 1, borderColor: '#313F58', borderRadius: 10, padding: 10, marginBottom: 8 },
+  upcomingTime: { color: '#C7D2E8', fontWeight: '700', fontSize: 12 },
+  upcomingRoute: { color: 'white', marginTop: 4, marginBottom: 3 },
+  upcomingMeta: { color: '#9AA8C2', fontSize: 12 },
   rideCard: { backgroundColor: colors.secondary, padding: 15, borderRadius: 10, marginBottom: 10 },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
   date: { color: '#888' },
