@@ -1,213 +1,289 @@
-# 🚖 Real-Time Cab Booking System
+# Cab Booking System (Master README)
 
-A highly scalable, full-stack real-time ride-hailing application built with **React Native (Expo)**, **Node.js**, **MySQL**, and **Redis**. 
+A full-stack, real-time cab booking platform with:
+- Mobile app (React Native + Expo)
+- Backend API and WebSocket server (Node.js + Express + Socket.IO)
+- MySQL database (cloud or local)
 
-This system provides a seamless experience for both riders and drivers, featuring live location tracking, an intelligent nearest-driver matching algorithm, dynamic surge pricing, and a highly resilient WebSocket architecture for real-time communication.
+This repository supports rider and driver workflows end-to-end, including live driver tracking, OTP ride start, in-ride chat, cancellation reasons, SOS, payments, ratings, promo codes, scheduled rides, and saved places.
 
----
+## 1. Core Features
 
-## ✨ Key Features
+### Rider Features
+- User registration and login (JWT auth)
+- Fare estimate before booking
+- Car category selection (`hatchback`, `sedan`, `suv`)
+- Promo code application (`/bookings/apply-promo`)
+- Scheduled rides (now / delayed pickup)
+- Saved places (Home/Work/custom labels)
+- Real-time driver tracking on map
+- Ride sharing link (tokenized public tracking URL)
+- In-ride chat with driver
+- OTP-based secure ride start
+- Ride cancellation with reason
+- SOS alert endpoint
+- Post-ride rating and review
+- Payment completion flow (cash/online)
+- Ride history, upcoming rides, receipt API
 
-### 👤 For Riders
-* **Smart Routing & Fare Estimation:** Calculates distance, duration, and dynamically applies surge pricing based on real-time traffic and demand.
-* **Live Driver Tracking:** Watch your assigned driver approach in real-time on the interactive map.
-* **Secure Rides:** OTP-based ride initiation ensures you get in the right car.
-* **SOS Emergency Alert:** One-tap SOS button that logs the event and prompts a call to emergency services.
-* **Post-Ride Rating System:** Rate drivers and provide textual feedback after trip completion.
-* **Payment Flexibility:** Choose between Cash or Online payment modes seamlessly.
+### Driver Features
+- Driver registration with vehicle details
+- Online/offline availability controls
+- Real-time location updates (foreground + background support in app)
+- Smart ride request dispatch and fallback to next driver
+- Accept/start/end ride lifecycle
+- In-ride chat with rider
+- Cancellation with reason
+- Earnings summary API
 
-### 🚘 For Drivers
-* **Status Management:** Toggle Online/Offline status effortlessly from the home screen.
-* **Interactive Ride Requests:** Receive rich in-app modals and push notifications for incoming rides with precise distance and fare details.
-* **In-App Navigation:** Deep linking to Google Maps/Apple Maps for turn-by-turn pickup and drop-off routing.
-* **Ride Lifecycle Control:** Manage the entire trip logically (Accept ➔ Navigate ➔ Start Ride via OTP ➔ End Ride).
+### Platform Features
+- Runtime reconciliation for stale rides on server startup
+- Scheduled ride dispatch queue polling
+- Auto schema migration via `ensureSchema()`
+- Promo table + redemption tracking
+- Cloud MySQL compatible schema/scripts
 
----
+## 2. Tech Stack
 
-## 🛠️ Tech Stack & Architecture
+### Frontend
+- React Native (Expo SDK 54)
+- React Navigation
+- react-native-maps + Google Places + Directions
+- Socket.IO Client
+- Axios
 
-### **Frontend (Mobile App)**
-* **Framework:** React Native / Expo
-* **Maps & Routing:** `react-native-maps`, `react-native-maps-directions`, Google Places API
-* **State & Real-time:** React Context API, `socket.io-client`
+### Backend
+- Node.js + Express
+- Socket.IO
+- mysql2
+- JWT + bcryptjs
+- Razorpay integration endpoints
+- Google Distance Matrix integration for traffic-aware estimates
 
-### **Backend (API & WebSockets)**
-* **Core:** Node.js, Express.js
-* **Database:** MySQL (Cloud/Local) via `mysql2` connection pooling.
-* **In-Memory Cache & Pub/Sub:** **Redis** (Upstash) - *Used for tracking ephemeral socket connections and scaling WebSocket instances across multiple servers.*
-* **Real-time Engine:** Socket.io
-* **Security:** JWT Authentication, `bcryptjs` for password hashing.
+## 3. Repository Structure
 
----
+```text
+Cab-Booking-System/
+  backend/
+    controllers/
+    routes/
+    middleware/
+    config/
+    utils/
+    server.js
+    setup_db.js
+    rebuild_db.js
+    seed_db.js
+  frontend/
+    src/
+      screens/
+      components/
+      context/
+      api/
+      utils/
+    App.js
+```
 
-## 🚀 Getting Started
+## 4. Prerequisites
 
-Follow these instructions to set up the project locally on your machine.
+- Node.js 18+
+- npm
+- MySQL database (local or cloud)
+- Google Maps API key (for route/traffic)
+- Razorpay keys (optional for online payments)
+- Expo Go or emulator/simulator for mobile testing
 
-### Prerequisites
-1. **Node.js** (v18+ recommended)
-2. **MySQL** Database (Local or Cloud like TiDB/PlanetScale)
-3. **Redis** Database (Use [Upstash](https://upstash.com) for a free serverless Redis instance)
-4. **Expo CLI** (`npm install -g expo-cli`)
-5. **Google Maps API Key** (with Maps SDK, Places API, and Directions API enabled)
+## 5. Backend Setup
 
----
-
-### 1️⃣ Backend Setup
-
-1. Open your terminal and navigate to the backend directory:
-   ```bash
-   cd backend
-
-5. **Google Maps API Key**
-
-   * Maps SDK
-   * Places API
-   * Directions API
-
----
-
-## 1️⃣ Backend Setup
-
-Navigate to the backend directory:
+From repo root:
 
 ```bash
 cd backend
-```
-
-Install dependencies:
-
-```bash
 npm install
 ```
 
-### Environment Configuration
-
-Create a `.env` file inside the `/backend` directory:
+Create `backend/.env`:
 
 ```env
-PORT=3000
-DB_HOST=your_mysql_host
-DB_USER=your_mysql_user
-DB_PASSWORD=your_mysql_password
-DB_NAME=cab_booking
-JWT_SECRET=your_super_secret_jwt_key
-REDIS_URL=redis://default:password@your-upstash-url.upstash.io:port
+PORT=4000
+
+DB_HOST=your_db_host
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+DB_NAME=your_db_name
+DB_PORT=3306
+
+JWT_SECRET=your_jwt_secret
+
+GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+
+# Optional
+TRIP_SHARE_BASE_URL=http://localhost:4000
+SERVER_PUBLIC_URL=http://localhost:4000
+TRIP_SHARE_TTL=6h
+TRIP_SHARE_SECRET=your_trip_share_secret
+SCHEDULED_QUEUE_POLL_MS=30000
 ```
 
-### Database Initialization
-
-Run the database setup script:
+Initialize schema:
 
 ```bash
 node setup_db.js
 ```
 
-### Start Backend Server
+Reset database completely (drops and recreates all active tables):
+
+```bash
+node rebuild_db.js
+```
+
+Optional seed data:
+
+```bash
+node seed_db.js
+```
+
+Start backend:
 
 ```bash
 npm start
 ```
 
----
+## 6. Frontend Setup
 
-## 2️⃣ Frontend Setup
-
-Navigate to the frontend directory:
+From repo root:
 
 ```bash
 cd frontend
-```
-
-Install dependencies:
-
-```bash
 npm install
 ```
 
-### Environment Configuration
-
-Create a `.env` file inside the `/frontend` directory:
+Create `frontend/.env`:
 
 ```env
-# Use your computer's local IPv4 address for testing on a physical device
-# Example: http://192.168.1.100:3000
-EXPO_PUBLIC_SERVER_URL=http://your-backend-ip:3000
-
-# Google Maps API Key
-EXPO_PUBLIC_GOOGLE_API_KEY=AIzaSyYourGoogleApiKeyHere
+EXPO_PUBLIC_SERVER_URL=http://your-backend-ip:4000
+EXPO_PUBLIC_GOOGLE_API_KEY=your_google_maps_api_key
 ```
 
-### Start Expo Development Server
+Start app:
 
 ```bash
 npx expo start
 ```
 
-Scan the QR code using the **Expo Go** app on Android or iOS, or run the app on a simulator.
+## 7. API Overview
 
----
+Base URL: `http://<backend-host>:<port>/api`
 
-## 📡 WebSocket Architecture Flow
+### Auth
+- `POST /auth/register`
+- `POST /auth/login`
 
-To ensure the system scales efficiently without losing active rides during server restarts, the real-time architecture utilizes **Redis**.
+### Bookings
+- `POST /bookings/estimate`
+- `POST /bookings/apply-promo`
+- `POST /bookings/request`
+- `POST /bookings/accept`
+- `POST /bookings/start`
+- `POST /bookings/end`
+- `POST /bookings/cancel`
+- `POST /bookings/pay`
+- `POST /bookings/sos`
+- `POST /bookings/rate`
+- `GET /bookings/history`
+- `GET /bookings/upcoming`
+- `GET /bookings/receipt/:bookingId`
+- `POST /bookings/share-link`
+- `GET /bookings/track/:token` (public)
+- `GET /bookings/saved-places`
+- `POST /bookings/saved-places`
+- `DELETE /bookings/saved-places/:placeId`
+- `POST /bookings/driver/availability`
+- `POST /bookings/driver-location`
+- `GET /bookings/driver/earnings`
 
-### 🔹 Connection Handling
+### Payments
+- `POST /payments/create-order`
+- `POST /payments/verify`
 
-* When a user logs in, their `socket.id` is mapped to their `userId` or `driverId`
-* The mapping is stored in Redis with an auto-expiring TTL (Time-To-Live)
+## 8. WebSocket Events
 
-### 🔹 Driver Location Pings
+### Client -> Server
+- `joinRider`
+- `joinDriver`
+- `driverLocation`
+- `declineRide`
+- `rideChatMessage`
 
-* Drivers emit GPS coordinates every **5 seconds**
-* Backend:
+### Server -> Client
+- `newRideRequest`
+- `rideAccepted`
+- `rideStarted`
+- `rideCompleted`
+- `driverMoved`
+- `rideUnavailable`
+- `scheduledRideDelayed`
+- `requestTimeout`
+- `rideCancelled`
+- `rideChatMessage`
+- `rideChatAck`
 
-  * Persists the location in MySQL
-  * Instantly broadcasts updates via Socket.io
+## 9. Active Database Tables
 
-### 🔹 Ride Matching
+- `users`
+- `drivers`
+- `bookings`
+- `saved_places`
+- `promotions`
+- `promotion_redemptions`
 
-* When a rider requests a cab:
+## 10. Useful Commands
 
-  * Backend calculates the nearest available driver using the **Haversine distance algorithm**
-  * Fetches the driver's active `socket.id` from Redis
-  * Emits a targeted `newRideRequest` event to the driver
+From `backend/`:
 
-### 🔹 Resilience & Fault Tolerance
-
-* Socket state is decoupled from server memory
-* Multiple Node.js instances remain in sync
-* Active rides continue even if a server crashes or restarts
-
----
-
-## 🔮 Future Roadmap
-
-* [ ] **Spatial Indexing**
-  Migrate Haversine calculations to `ST_Distance_Sphere` for optimized geospatial queries.
-* [ ] **Driver Wallet System**
-  Earnings ledger, payouts, and payment gateway integration (Razorpay / Stripe).
-* [ ] **Background Location Tracking**
-  Continuous driver tracking using Expo Background Fetch.
-* [ ] **Advanced Analytics Dashboard**
-  Admin insights into peak hours, popular routes, and surge pricing efficiency.
-
----
-
-## 📄 License
-
-MIT License
-
----
-
-## 🤝 Contributing
-
-Pull requests are welcome.
-For major changes, please open an issue first to discuss what you would like to change.
-
----
-
-### ⭐ If you like this project, don’t forget to star the repository!
-
+```bash
+npm start          # start API + socket server
+npm run dev        # start with nodemon
+node setup_db.js   # create/validate schema
+node rebuild_db.js # full reset
+node seed_db.js    # insert test rider/driver
 ```
+
+From `frontend/`:
+
+```bash
+npm start
+npm run android
+npm run ios
+npm run web
+npm run lint
 ```
+
+## 11. Troubleshooting
+
+### Port already in use (`EADDRINUSE`)
+
+```powershell
+Get-NetTCPConnection -LocalPort 4000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+```
+
+### App cannot reach backend from phone
+- Use your machine LAN IP in `EXPO_PUBLIC_SERVER_URL`
+- Ensure backend is listening on that port
+- Ensure firewall allows inbound traffic
+
+### Pricing/ETA fallback behavior
+- If Google Maps API key is missing/invalid, backend falls back to Haversine distance logic
+
+## 12. Security Notes
+
+- Do not commit `.env` files with real secrets
+- Rotate JWT, DB, Razorpay, and Google keys if exposed
+- Use production CORS and auth hardening before deployment
+
+## 13. License
+
+MIT 
